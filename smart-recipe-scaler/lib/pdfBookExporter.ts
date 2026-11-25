@@ -434,7 +434,7 @@ export function downloadStructuredRecipeBookPdf(params: {
   const blob = new Blob(chunks as BlobPart[], { type: 'application/pdf' });
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
-  const safeFileName = (bookTitle.trim() || 'recipe-book').replace(/[^a-zA-Z0-9_-]+/g, '-');
+  const safeFileName = (params.bookTitle.trim() || 'recipe-book').replace(/[^a-zA-Z0-9_-]+/g, '-');
   link.href = url;
   link.download = safeFileName + '.pdf';
   document.body.appendChild(link);
