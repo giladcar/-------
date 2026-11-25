@@ -691,7 +691,7 @@ function playAlarmBeep(kind: 'finish' | 'reminder' = 'finish') {
       const gain = ctx.createGain();
       osc.type = 'sine';
       osc.frequency.value = freq;
-      gain.gain.setValueAtTime(0.2, ctx.currentTime + i * 0.22);
+      gain.gain.setValueAtTime(0.22, ctx.currentTime + i * 0.22);
       gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + i * 0.22 + 0.2);
       osc.connect(gain);
       gain.connect(ctx.destination);
@@ -815,7 +815,22 @@ export default function SmartRecipeScalerPage() {
     return () => clearInterval(interval);
   }, []);
 
-  // חישוב זמן כולל בשניות ומקסימום דקות לתזכורת (עד 60 דקות ולא יותר מאורך הטיימר)
+  const hasFinishedTimers = useMemo(
+    () => Object.values(timers).some((t) => t.finished),
+    [timers]
+  );
+
+  // חזרה על צליל הסיום כל 4.5 שניות כל עוד יש טיימר שהסתיים ולא אופס/נסגר
+  useEffect(() => {
+    if (!hasFinishedTimers) return;
+
+    const repeatInterval = setInterval(() => {
+      playAlarmBeep('finish');
+    }, 4500);
+
+    return () => clearInterval(repeatInterval);
+  }, [hasFinishedTimers]);
+
   const customTotalSeconds = useMemo(() => {
     const h = Math.max(0, Math.floor(customHours || 0));
     const m = Math.max(0, Math.floor(customMinutes || 0));
@@ -825,12 +840,10 @@ export default function SmartRecipeScalerPage() {
 
   const maxAllowedReminderMinutes = useMemo(() => {
     if (customTotalSeconds <= 60) return 0;
-    // חייב להיות פחות מהזמן הכולל של הטיימר ולא יותר מ-60 דקות
     const strictlyLessThanTotal = Math.floor((customTotalSeconds - 1) / 60);
     return Math.min(60, Math.max(0, strictlyLessThanTotal));
   }, [customTotalSeconds]);
 
-  // עדכון אוטומטי של שדה התזכורת אם המשתמש קיצר את זמן הטיימר מתחת לערך התזכורת
   useEffect(() => {
     if (maxAllowedReminderMinutes === 0) {
       setReminderMinutesInput(0);
@@ -863,9 +876,9 @@ export default function SmartRecipeScalerPage() {
 
     const id = 'custom-timer-' + Date.now();
     const labelParts: string[] = [];
-    if (customHours > 0) labelParts.push(customHours + ' שע\'');
-    if (customMinutes > 0) labelParts.push(customMinutes + ' דק\'');
-    if (customSeconds > 0) labelParts.push(customSeconds + ' שנ\'');
+    if (customHours > 0) labelParts.push(customHours + " שע'");
+    if (customMinutes > 0) labelParts.push(customMinutes + " דק'");
+    if (customSeconds > 0) labelParts.push(customSeconds + " שנ'");
 
     const titleText = customTitle.trim() ? customTitle.trim() : 'טיימר מותאם אישית';
 
@@ -1582,4 +1595,4 @@ fs.writeFileSync(path.join(process.cwd(), 'lib', 'recipeEngine.ts'), engineCode,
 fs.writeFileSync(path.join(process.cwd(), 'app', 'api', 'extract-recipe', 'route.ts'), apiRouteCode, 'utf8');
 fs.writeFileSync(path.join(process.cwd(), 'app', 'page.tsx'), pageCode, 'utf8');
 
-console.log('עודכן בהצלחה: טיימר מותאם אישית עם שעות/דקות/שניות ותזכורת מוקדמת מוגבלת ל-60 דקות וזמן הטיימר.');
+console.log('עודכן בהצלחה: צפצוף חוזר כל 4.5 שניות בסיום טיימר + תיקון שגיאת תחביר לבנייה ב-Vercel.');
