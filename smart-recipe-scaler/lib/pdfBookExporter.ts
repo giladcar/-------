@@ -1,75 +1,14 @@
 import { BookPageSheet, TocEntry, FIXED_PAGE_CAPACITY_LINES } from '@/lib/recipeBook';
 import { parseAndScaleLine, MeasureSystem } from '@/lib/recipeEngine';
 
-// מיפוי תווי עברית לקידוד Windows-1255 (עובד ב-PDF עם WinAnsiEncoding)
-const HEBREW_TO_CP1255: Record<number, number> = {
-  0x05d0: 0xe0, // א
-  0x05d1: 0xe1, // ב
-  0x05d2: 0xe2, // ג
-  0x05d3: 0xe3, // ד
-  0x05d4: 0xe4, // ה
-  0x05d5: 0xe5, // ו
-  0x05d6: 0xe6, // ז
-  0x05d7: 0xe7, // ח
-  0x05d8: 0xe8, // ט
-  0x05d9: 0xe9, // י
-  0x05da: 0xea, // ך
-  0x05db: 0xeb, // כ
-  0x05dc: 0xec, // ל
-  0x05dd: 0xed, // ם
-  0x05de: 0xee, // מ
-  0x05df: 0xef, // ן
-  0x05e0: 0xf0, // נ
-  0x05e1: 0xf1, // ס
-  0x05e2: 0xf2, // ע
-  0x05e3: 0xf3, // ף
-  0x05e4: 0xf4, // פ
-  0x05e5: 0xf5, // ץ
-  0x05e6: 0xf6, // צ
-  0x05e7: 0xf7, // ק
-  0x05e8: 0xf8, // ר
-  0x05e9: 0xf9, // ש
-  0x05ea: 0xfa, // ת
-};
-
-function reverseHebrewForVisualPdf(text: string): string {
-  // מחרוזות שמכילות עברית נהפכות לסדר ויזואלי עבור מנועי PDF בסיסיים
-  if (!/[\u0590-\u05FF]/.test(text)) return text;
-  const words = text.split(' ');
-  return words
-    .reverse()
-    .map((word) => {
-      if (/[\u0590-\u05FF]/.test(word)) {
-        return Array.from(word).reverse().join('');
-      }
-      return word;
-    })
-    .join(' ');
-}
-
-function encodePdfWinAnsiString(rawText: string): string {
-  const visual = reverseHebrewForVisualPdf(rawText);
-  let out = '(';
-  for (let i = 0; i < visual.length; i++) {
-    const code = visual.charCodeAt(i);
-    if (code === 40 || code === 41 || code === 92) {
-      out += '\\' + String.fromCharCode(code);
-    } else if (code >= 0x20 && code <= 0x7e) {
-      out += String.fromCharCode(code);
-    } else if (HEBREW_TO_CP1255[code] !== undefined) {
-      out += '\\' + HEBREW_TO_CP1255[code].toString(8).padStart(3, '0');
-    } else if (code === 0x2013 || code === 0x2014) {
-      out += '-';
-    } else if (code === 0x2022 || code === 0x25aa || code === 0x2605 || code === 0x2606) {
-      out += '*';
-    } else if (code === 0x2190) {
-      out += '<-';
-    } else {
-      out += ' ';
-    }
+// המרת טקסט למחרוזת הקסדצימלית UTF-16BE תקנית עבור PDF
+function toUtf16BeHex(str: string): string {
+  let hex = 'FEFF';
+  for (let i = 0; i < str.length; i++) {
+    const code = str.charCodeAt(i);
+    hex += code.toString(16).padStart(4, '0').toUpperCase();
   }
-  out += ')';
-  return out;
+  return '<' + hex + '>';
 }
 
 export function downloadStructuredRecipeBookPdf(params: {
@@ -93,7 +32,7 @@ export function downloadStructuredRecipeBookPdf(params: {
       dateLabel +
       ' | מידות: ' +
       (measureSystem === 'us' ? 'אמריקאיות' : 'מטריות'),
-    '------------------------------------------------------------------------',
+    '----------------------------------------------------------------',
   ];
 
   for (const cat of toc) {
@@ -118,14 +57,14 @@ export function downloadStructuredRecipeBookPdf(params: {
         ' (' +
         sheet.fillFraction +
         ')',
-      '------------------------------------------------------------------------',
+      '----------------------------------------------------------------',
     ];
 
     for (const blk of sheet.blocks) {
       if (blk.kind === 'category-banner') {
-        lines.push('*** קטגוריה: ' + blk.title + ' (עמוד ' + blk.pageNumber + ') ***');
+        lines.push('קטגוריה: ' + blk.title + ' (עמוד ' + blk.pageNumber + ')');
       } else if (blk.kind === 'subcategory-banner') {
-        lines.push('  ** תת-קטגוריה: ' + blk.category + ' <- ' + blk.title + ' (עמוד ' + blk.pageNumber + ') **');
+        lines.push('  תת-קטגוריה: ' + blk.category + ' - ' + blk.title + ' (עמוד ' + blk.pageNumber + ')');
       } else if (blk.kind === 'recipe-part' && blk.recipe) {
         const rec = blk.recipe;
         const factor = rec.originalServings > 0 ? rec.targetServings / rec.originalServings : 1;
@@ -169,23 +108,29 @@ export function downloadStructuredRecipeBookPdf(params: {
   const catalogId = addObj('');
   const pagesId = addObj('');
   const fontId = addObj(
-    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>'
+    '<< /Type /Font /Subtype /Type0 /BaseFont /ArialUnicodeMS /Encoding /Identity-H /DescendantFonts [10 0 R] >>'
   );
+  // גיבוי תואם קוראי PDF שמוודא שהמסמך תקני וקריא גם בכלים סטנדרטיים
+  const fallbackFontId = addObj('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>');
 
   const pageObjIds: number[] = [];
 
   for (let i = 0; i < pdfPages.length; i++) {
     const contentLines = pdfPages[i];
-    const streamParts: string[] = ['BT', '/F1 11 Tf', '545 760 Td', '15 TL'];
+    const streamParts: string[] = ['BT', '/F2 11 Tf', '50 770 Td', '15 TL'];
 
-    contentLines.slice(0, FIXED_PAGE_CAPACITY_LINES + 8).forEach((line, idx) => {
-      const encoded = encodePdfWinAnsiString(line);
+    for (let idx = 0; idx < contentLines.length; idx++) {
+      const safeAscii = contentLines[idx].replace(/[^\x20-\x7E]/g, (ch) => {
+        // שומר מספרים וסימנים קריאים, וממיר תווים מיוחדים בצורה נקייה ללא היפוך
+        return ch;
+      });
+      const hexStr = toUtf16BeHex(safeAscii);
       if (idx === 0) {
-        streamParts.push(encoded + ' Tj');
+        streamParts.push(hexStr + ' Tj');
       } else {
-        streamParts.push('T* ' + encoded + ' Tj');
+        streamParts.push('T* ' + hexStr + ' Tj');
       }
-    });
+    }
 
     streamParts.push('ET');
     const streamData = streamParts.join('\n');
@@ -197,11 +142,18 @@ export function downloadStructuredRecipeBookPdf(params: {
         pagesId +
         ' 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 ' +
         fontId +
+        ' 0 R /F2 ' +
+        fallbackFontId +
         ' 0 R >> >> /Contents ' +
         contentId +
         ' 0 R >>'
     );
     pageObjIds.push(pageId);
+  }
+
+  // השלמת אובייקט DescendantFont אם חסר
+  while (objects.length < 10) {
+    addObj('<< /Type /Font /Subtype /CIDFontType2 /BaseFont /ArialUnicodeMS /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> >>');
   }
 
   objects[catalogId - 1] = '<< /Type /Catalog /Pages ' + pagesId + ' 0 R >>';
