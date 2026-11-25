@@ -45,7 +45,6 @@ interface DrawLineItem {
   color: string;
   lineHeight: number;
   indentPx?: number;
-  gapAfter?: number;
 }
 
 function renderPagesToJpegDataUrls(params: {
@@ -60,7 +59,7 @@ function renderPagesToJpegDataUrls(params: {
 
   const widthPx = 1190;
   const heightPx = 1684;
-  const marginX = 56;
+  const marginX = 52;
   const contentWidth = widthPx - marginX * 2;
   const rightEdge = widthPx - marginX;
   const centerX = widthPx / 2;
@@ -81,8 +80,8 @@ function renderPagesToJpegDataUrls(params: {
       ctx,
       'עמוד ' + pageNum + ' • ' + subtitle,
       rightEdge,
-      36,
-      'bold 19px Arial, sans-serif',
+      34,
+      'bold 20px Arial, sans-serif',
       '#d97706',
       'right'
     );
@@ -90,21 +89,21 @@ function renderPagesToJpegDataUrls(params: {
     ctx.strokeStyle = '#e5e7eb';
     ctx.lineWidth = 2;
     ctx.beginPath();
-    ctx.moveTo(marginX, 68);
-    ctx.lineTo(rightEdge, 68);
+    ctx.moveTo(marginX, 66);
+    ctx.lineTo(rightEdge, 66);
     ctx.stroke();
 
     ctx.beginPath();
-    ctx.moveTo(marginX, heightPx - 68);
-    ctx.lineTo(rightEdge, heightPx - 68);
+    ctx.moveTo(marginX, heightPx - 66);
+    ctx.lineTo(rightEdge, heightPx - 66);
     ctx.stroke();
 
     drawAlignedLine(
       ctx,
       bookTitle,
       rightEdge,
-      heightPx - 52,
-      '17px Arial, sans-serif',
+      heightPx - 50,
+      '18px Arial, sans-serif',
       '#6b7280',
       'right'
     );
@@ -112,8 +111,8 @@ function renderPagesToJpegDataUrls(params: {
       ctx,
       'עמוד ' + pageNum,
       marginX + 60,
-      heightPx - 52,
-      'bold 17px Arial, sans-serif',
+      heightPx - 50,
+      'bold 18px Arial, sans-serif',
       '#374151',
       'left'
     );
@@ -128,18 +127,18 @@ function renderPagesToJpegDataUrls(params: {
   );
   if (cover) {
     const { canvas, ctx } = cover;
-    let y = 92;
+    let y = 90;
 
     drawAlignedLine(
       ctx,
       bookTitle,
       centerX,
       y,
-      'bold 42px Arial, sans-serif',
+      'bold 44px Arial, sans-serif',
       '#111827',
       'center'
     );
-    y += 54;
+    y += 56;
     drawAlignedLine(
       ctx,
       'תאריך: ' +
@@ -150,56 +149,56 @@ function renderPagesToJpegDataUrls(params: {
         (measureSystem === 'us' ? 'אמריקאיות' : 'מטריות'),
       centerX,
       y,
-      '19px Arial, sans-serif',
+      '20px Arial, sans-serif',
       '#4b5563',
       'center'
     );
-    y += 42;
+    y += 44;
     drawAlignedLine(
       ctx,
       'תוכן עניינים',
       rightEdge,
       y,
-      'bold 26px Arial, sans-serif',
+      'bold 28px Arial, sans-serif',
       '#b45309',
       'right'
     );
-    y += 36;
+    y += 38;
 
     for (const cat of toc) {
-      if (y > heightPx - 100) break;
+      if (y > heightPx - 96) break;
       for (const line of wrapHebrewLine(
         ctx,
         'קטגוריה: ' + cat.category + ' — עמוד ' + cat.categoryPage,
         contentWidth
       )) {
-        if (y > heightPx - 100) break;
-        drawAlignedLine(ctx, line, rightEdge, y, 'bold 21px Arial, sans-serif', '#b45309', 'right');
-        y += 27;
+        if (y > heightPx - 96) break;
+        drawAlignedLine(ctx, line, rightEdge, y, 'bold 22px Arial, sans-serif', '#b45309', 'right');
+        y += 28;
       }
 
       for (const sub of cat.subCategories) {
-        if (y > heightPx - 100) break;
+        if (y > heightPx - 96) break;
         for (const line of wrapHebrewLine(
           ctx,
           '   תת-קטגוריה: ' + sub.subCategory + ' — עמוד ' + sub.subPage,
           contentWidth - 20
         )) {
-          if (y > heightPx - 100) break;
-          drawAlignedLine(ctx, line, rightEdge - 16, y, 'bold 18px Arial, sans-serif', '#1f2937', 'right');
-          y += 24;
+          if (y > heightPx - 96) break;
+          drawAlignedLine(ctx, line, rightEdge - 16, y, 'bold 19px Arial, sans-serif', '#1f2937', 'right');
+          y += 25;
         }
 
         for (const r of sub.recipes) {
-          if (y > heightPx - 100) break;
+          if (y > heightPx - 96) break;
           for (const line of wrapHebrewLine(
             ctx,
             '      • ' + r.title + ' (עמוד ' + r.pageNumber + ')',
             contentWidth - 40
           )) {
-            if (y > heightPx - 100) break;
-            drawAlignedLine(ctx, line, rightEdge - 32, y, '17px Arial, sans-serif', '#374151', 'right');
-            y += 22;
+            if (y > heightPx - 96) break;
+            drawAlignedLine(ctx, line, rightEdge - 32, y, '18px Arial, sans-serif', '#374151', 'right');
+            y += 23;
           }
         }
       }
@@ -230,25 +229,25 @@ function renderPagesToJpegDataUrls(params: {
         ctx,
         isCat ? 'קטגוריה ראשית' : banner.category,
         centerX,
-        560,
-        'bold 30px Arial, sans-serif',
+        550,
+        'bold 32px Arial, sans-serif',
         '#d97706',
         'center'
       );
 
       const bigTitleLines = wrapHebrewLine(ctx, banner.title, contentWidth - 40);
-      let by = 620;
+      let by = 615;
       for (const bLine of bigTitleLines) {
         drawAlignedLine(
           ctx,
           bLine,
           centerX,
           by,
-          isCat ? 'bold 80px Arial, sans-serif' : 'bold 64px Arial, sans-serif',
+          isCat ? 'bold 84px Arial, sans-serif' : 'bold 66px Arial, sans-serif',
           isCat ? '#b45309' : '#111827',
           'center'
         );
-        by += isCat ? 98 : 80;
+        by += isCat ? 102 : 82;
       }
 
       drawAlignedLine(
@@ -256,7 +255,7 @@ function renderPagesToJpegDataUrls(params: {
         (banner.recipeCount || 0) + ' מתכונים • עמוד ' + banner.pageNumber,
         centerX,
         by + 20,
-        '24px Arial, sans-serif',
+        '25px Arial, sans-serif',
         '#4b5563',
         'center'
       );
@@ -265,8 +264,7 @@ function renderPagesToJpegDataUrls(params: {
       continue;
     }
 
-    // בניית רשימת שורות מלאה עבור העמוד וזרימה ב-2 עמודות (ימין ואז שמאל) למילוי מיטבי
-    const colGap = 32;
+    const colGap = 36;
     const colWidth = (contentWidth - colGap) / 2;
     const rightColX = rightEdge;
     const leftColX = rightEdge - colWidth - colGap;
@@ -289,9 +287,9 @@ function renderPagesToJpegDataUrls(params: {
         for (const tLine of wrapHebrewLine(ctx, titleText, colWidth)) {
           allItems.push({
             text: tLine,
-            font: 'bold 19px Arial, sans-serif',
+            font: 'bold 23px Arial, sans-serif',
             color: '#111827',
-            lineHeight: 24,
+            lineHeight: 29,
           });
         }
 
@@ -299,9 +297,9 @@ function renderPagesToJpegDataUrls(params: {
         if (ings.length > 0) {
           allItems.push({
             text: 'מצרכים:',
-            font: 'bold 17px Arial, sans-serif',
+            font: 'bold 20px Arial, sans-serif',
             color: '#b45309',
-            lineHeight: 22,
+            lineHeight: 26,
           });
           for (const ing of ings) {
             const scaled = parseAndScaleLine(
@@ -311,12 +309,12 @@ function renderPagesToJpegDataUrls(params: {
               rec.convertToGrams,
               measureSystem
             ).displayText;
-            for (const iLine of wrapHebrewLine(ctx, '• ' + scaled, colWidth - 12)) {
+            for (const iLine of wrapHebrewLine(ctx, '• ' + scaled, colWidth - 14)) {
               allItems.push({
                 text: iLine,
-                font: '16px Arial, sans-serif',
+                font: '19px Arial, sans-serif',
                 color: '#1f2937',
-                lineHeight: 20,
+                lineHeight: 24,
                 indentPx: 10,
               });
             }
@@ -327,17 +325,17 @@ function renderPagesToJpegDataUrls(params: {
         if (steps.length > 0) {
           allItems.push({
             text: 'שלבי הכנה:',
-            font: 'bold 17px Arial, sans-serif',
+            font: 'bold 20px Arial, sans-serif',
             color: '#b45309',
-            lineHeight: 22,
+            lineHeight: 26,
           });
           steps.forEach((st, idx) => {
-            for (const sLine of wrapHebrewLine(ctx, idx + 1 + '. ' + st, colWidth - 12)) {
+            for (const sLine of wrapHebrewLine(ctx, idx + 1 + '. ' + st, colWidth - 14)) {
               allItems.push({
                 text: sLine,
-                font: '16px Arial, sans-serif',
+                font: '19px Arial, sans-serif',
                 color: '#1f2937',
-                lineHeight: 20,
+                lineHeight: 24,
                 indentPx: 10,
               });
             }
@@ -346,28 +344,39 @@ function renderPagesToJpegDataUrls(params: {
 
         allItems.push({
           text: '',
-          font: '16px Arial, sans-serif',
+          font: '19px Arial, sans-serif',
           color: '#1f2937',
-          lineHeight: 12,
+          lineHeight: 14,
         });
       }
     }
 
-    const startY = 88;
-    const bottomLimit = heightPx - 84;
+    const startY = 86;
+    const bottomLimit = heightPx - 82;
+    const maxColHeight = bottomLimit - startY;
+
+    // חלוקה מאוזנת בין הטור הימני לטור השמאלי למילוי שני צידי הדף
+    let totalHeight = 0;
+    for (const item of allItems) totalHeight += item.lineHeight;
+
+    const splitThreshold =
+      totalHeight > maxColHeight ? Math.ceil(totalHeight / 2) : maxColHeight;
+
     let currentX = rightColX;
     let y = startY;
+    let colUsed = 0;
     let movedToLeftCol = false;
 
     for (const item of allItems) {
+      if (!movedToLeftCol && (colUsed + item.lineHeight > splitThreshold || y + item.lineHeight > bottomLimit)) {
+        currentX = leftColX;
+        y = startY;
+        colUsed = 0;
+        movedToLeftCol = true;
+      }
+
       if (y + item.lineHeight > bottomLimit) {
-        if (!movedToLeftCol) {
-          currentX = leftColX;
-          y = startY;
-          movedToLeftCol = true;
-        } else {
-          break;
-        }
+        break;
       }
 
       if (item.text) {
@@ -382,6 +391,7 @@ function renderPagesToJpegDataUrls(params: {
         );
       }
       y += item.lineHeight;
+      colUsed += item.lineHeight;
     }
 
     pageCanvases.push(canvas);
