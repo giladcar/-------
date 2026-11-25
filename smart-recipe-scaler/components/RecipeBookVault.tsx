@@ -5,7 +5,7 @@ import {
   DEFAULT_CATEGORIES,
   SavedRecipeItem,
   BookExportScope,
-  groupRecipesByCategory,
+  buildPagedBook,
 } from '@/lib/recipeBook';
 import { parseAndScaleLine, MeasureSystem } from '@/lib/recipeEngine';
 
@@ -44,7 +44,6 @@ export default function RecipeBookVault({
   const [customSubCategory, setCustomSubCategory] = useState<string>('');
   const [newFavorite, setNewFavorite] = useState<boolean>(false);
 
-  // עריכה ישירה של מתכון שמור
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editTitle, setEditTitle] = useState<string>('');
   const [editCategory, setEditCategory] = useState<string>('');
@@ -54,7 +53,6 @@ export default function RecipeBookVault({
   const [editIngredients, setEditIngredients] = useState<string>('');
   const [editSteps, setEditSteps] = useState<string>('');
 
-  // כריכה, תוכן עניינים וייצוא ספר מתכונים
   const [selectedIds, setSelectedIds] = useState<Record<string, boolean>>({});
   const [exportScope, setExportScope] = useState<BookExportScope>('all');
   const [bookOpen, setBookOpen] = useState<boolean>(false);
@@ -144,7 +142,7 @@ export default function RecipeBookVault({
     return savedRecipes;
   }, [savedRecipes, exportScope, selectedIds]);
 
-  const groupedBook = useMemo(() => groupRecipesByCategory(recipesForBook), [recipesForBook]);
+  const pagedBook = useMemo(() => buildPagedBook(recipesForBook), [recipesForBook]);
 
   const scrollToSection = (elementId: string) => {
     if (typeof document === 'undefined') return;
@@ -155,26 +153,30 @@ export default function RecipeBookVault({
   };
 
   const buildBookPlainText = () => {
-    if (groupedBook.length === 0) return 'אין מתכונים תואמים להצגה בספר המתכונים.';
+    if (pagedBook.length === 0) return 'אין מתכונים תואמים להצגה בספר המתכונים.';
     const lines: string[] = [
       '📖 ' + (bookTitle.trim() || 'ספר המתכונים שלי'),
-      'תאריך הפקה: ' + generatedDateLabel,
+      'עמוד 1 — כריכה ותוכן עניינים | תאריך הפקה: ' + generatedDateLabel,
       '====================================',
       'תוכן עניינים:',
     ];
 
-    for (const catGroup of groupedBook) {
-      lines.push('• ' + catGroup.category);
+    for (const catGroup of pagedBook) {
+      lines.push('• ' + catGroup.category + ' — עמוד ' + catGroup.pageNumber);
       for (const subGroup of catGroup.subGroups) {
-        lines.push('   - ' + subGroup.subCategory + ' (' + subGroup.recipes.length + ')');
+        lines.push('   - ' + subGroup.subCategory + ' (עמוד ' + subGroup.pageNumber + ')');
+        for (const pRec of subGroup.recipes) {
+          lines.push('      * ' + pRec.recipe.title + ' — עמוד ' + pRec.pageNumber);
+        }
       }
     }
 
-    for (const catGroup of groupedBook) {
-      lines.push('\n📁 ' + catGroup.category);
+    for (const catGroup of pagedBook) {
+      lines.push('\n📁 ' + catGroup.category + ' (עמוד ' + catGroup.pageNumber + ')');
       for (const subGroup of catGroup.subGroups) {
-        lines.push('  📂 ' + subGroup.subCategory);
-        for (const rec of subGroup.recipes) {
+        lines.push('  📂 ' + subGroup.subCategory + ' (עמוד ' + subGroup.pageNumber + ')');
+        for (const pRec of subGroup.recipes) {
+          const rec = pRec.recipe;
           const factor = rec.originalServings > 0 ? rec.targetServings / rec.originalServings : 1;
           const scaledIngs = rec.rawIngredients
             .split('\n')
@@ -191,7 +193,14 @@ export default function RecipeBookVault({
             .map((s, i) => '      ' + (i + 1) + '. ' + s.trim());
 
           lines.push(
-            '    • ' + (rec.favorite ? '⭐ ' : '') + rec.title + ' (' + rec.targetServings + ' מנות)'
+            '    • [עמוד ' +
+              pRec.pageNumber +
+              '] ' +
+              (rec.favorite ? '⭐ ' : '') +
+              rec.title +
+              ' (' +
+              rec.targetServings +
+              ' מנות)'
           );
           lines.push('      מצרכים:');
           lines.push(...scaledIngs);
@@ -222,7 +231,6 @@ export default function RecipeBookVault({
 
   return (
     <div className="space-y-6">
-      {/* שמירת המתכון הנוכחי עם קטגוריה ותת-קטגוריה */}
       <section className={'p-6 rounded-2xl shadow-sm border space-y-4 ' + surfaceClass}>
         <div>
           <h2 className="font-bold text-lg">שמור את המתכון הנוכחי לספרייה</h2>
@@ -313,7 +321,6 @@ export default function RecipeBookVault({
         </form>
       </section>
 
-      {/* רשימת מתכונים שמורים, עריכה ישירה, מועדפים, בחירה ומחיקה */}
       <section className={'p-6 rounded-2xl shadow-sm border space-y-4 ' + surfaceClass}>
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
           <div>
@@ -577,83 +584,120 @@ export default function RecipeBookVault({
         )}
       </section>
 
-      {/* כריכה, תוכן עניינים וספר מתכונים ממוין לפי קטגוריות ותתי-קטגוריות */}
       {bookOpen && (
         <section className={'p-6 rounded-2xl shadow-md border space-y-6 ' + surfaceClass}>
-          {/* כריכת הספר */}
+          {/* עמוד 1: כריכה ותוכן עניינים עם ציון מספר עמוד לכל פריט */}
           <div
             className={
-              'p-6 rounded-2xl border text-center space-y-2 ' +
+              'p-6 rounded-2xl border space-y-4 ' +
               (darkMode
                 ? 'bg-gradient-to-b from-amber-500/15 to-slate-900 border-amber-500/30'
                 : 'bg-gradient-to-b from-amber-50 to-white border-amber-200')
             }
           >
-            <div className="text-xs font-bold uppercase tracking-wider text-amber-500">
-              מהדורת ספר מתכונים •{' '}
-              {exportScope === 'all'
-                ? 'כל המתכונים'
-                : exportScope === 'favorites'
-                ? 'מתכונים מועדפים'
-                : 'מתכונים נבחרים'}
+            <div className="flex items-center justify-between text-xs font-bold text-amber-500">
+              <span>
+                מהדורת ספר מתכונים •{' '}
+                {exportScope === 'all'
+                  ? 'כל המתכונים'
+                  : exportScope === 'favorites'
+                  ? 'מתכונים מועדפים'
+                  : 'מתכונים נבחרים'}
+              </span>
+              <span className="px-2.5 py-0.5 rounded-full bg-amber-500/15">עמוד 1</span>
             </div>
-            <h2 className="text-2xl md:text-3xl font-bold">
-              {bookTitle.trim() || 'ספר המתכונים שלי'}
-            </h2>
-            <p className={mutedClass + ' text-xs'}>
-              תאריך הפקה: {generatedDateLabel} • {recipesForBook.length} מתכונים • מידות:{' '}
-              {measureSystem === 'us' ? 'אמריקאיות (cup / tbsp / oz)' : 'מטריות / ישראליות'}
-            </p>
-          </div>
 
-          {/* תוכן עניינים מהיר */}
-          {groupedBook.length > 0 && (
-            <div
-              className={
-                'p-4 rounded-xl border space-y-3 ' +
-                (darkMode ? 'bg-slate-800/40 border-slate-700' : 'bg-stone-50 border-stone-200')
-              }
-            >
-              <h3 className="font-bold text-base">תוכן עניינים</h3>
-              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
-                {groupedBook.map((catGroup, cIdx) => {
-                  const catDomId = 'book-cat-' + cIdx;
-                  return (
-                    <div key={catGroup.category} className="space-y-1">
-                      <button
-                        type="button"
-                        onClick={() => scrollToSection(catDomId)}
-                        className="font-bold text-sm text-amber-500 hover:underline cursor-pointer text-right"
-                      >
-                        {catGroup.category}
-                      </button>
-                      <ul className="space-y-1 pr-3 text-xs">
-                        {catGroup.subGroups.map((subGroup, sIdx) => {
-                          const subDomId = 'book-sub-' + cIdx + '-' + sIdx;
-                          return (
-                            <li key={subGroup.subCategory}>
+            <div className="text-center space-y-1.5 py-2">
+              <h2 className="text-2xl md:text-3xl font-bold">
+                {bookTitle.trim() || 'ספר המתכונים שלי'}
+              </h2>
+              <p className={mutedClass + ' text-xs'}>
+                תאריך הפקה: {generatedDateLabel} • {recipesForBook.length} מתכונים • מידות:{' '}
+                {measureSystem === 'us' ? 'אמריקאיות (cup / tbsp / oz)' : 'מטריות / ישראליות'}
+              </p>
+            </div>
+
+            {pagedBook.length > 0 && (
+              <div
+                className={
+                  'p-4 rounded-xl border space-y-3 ' +
+                  (darkMode ? 'bg-slate-900/80 border-slate-700' : 'bg-white border-amber-200/80')
+                }
+              >
+                <div className="flex items-center justify-between">
+                  <h3 className="font-bold text-base">תוכן עניינים</h3>
+                  <span className={mutedClass + ' text-xs'}>עמוד 1</span>
+                </div>
+
+                <div className="space-y-3">
+                  {pagedBook.map((catGroup) => (
+                    <div
+                      key={catGroup.category}
+                      className="space-y-1.5 border-b border-stone-500/15 pb-2.5 last:border-b-0 last:pb-0"
+                    >
+                      <div className="flex items-center justify-between">
+                        <button
+                          type="button"
+                          onClick={() => scrollToSection(catGroup.domId)}
+                          className="font-bold text-sm text-amber-500 hover:underline cursor-pointer text-right"
+                        >
+                          {catGroup.category}
+                        </button>
+                        <span className="text-xs font-bold text-amber-500">
+                          עמוד {catGroup.pageNumber}
+                        </span>
+                      </div>
+
+                      <ul className="space-y-1.5 pr-3 text-xs">
+                        {catGroup.subGroups.map((subGroup) => (
+                          <li key={subGroup.subCategory} className="space-y-1">
+                            <div className="flex items-center justify-between">
                               <button
                                 type="button"
-                                onClick={() => scrollToSection(subDomId)}
-                                className={mutedClass + ' hover:underline cursor-pointer text-right'}
+                                onClick={() => scrollToSection(subGroup.domId)}
+                                className="font-semibold hover:underline cursor-pointer text-right"
                               >
                                 {subGroup.subCategory} ({subGroup.recipes.length})
                               </button>
-                            </li>
-                          );
-                        })}
+                              <span className={mutedClass + ' font-medium'}>
+                                עמוד {subGroup.pageNumber}
+                              </span>
+                            </div>
+
+                            <ul className="pr-4 space-y-0.5">
+                              {subGroup.recipes.map((pRec) => (
+                                <li
+                                  key={pRec.recipe.id}
+                                  className="flex items-center justify-between text-[11px]"
+                                >
+                                  <button
+                                    type="button"
+                                    onClick={() => scrollToSection(pRec.domId)}
+                                    className={
+                                      mutedClass + ' hover:underline cursor-pointer text-right'
+                                    }
+                                  >
+                                    {pRec.recipe.favorite ? '⭐ ' : ''}
+                                    {pRec.recipe.title}
+                                  </button>
+                                  <span className={mutedClass}>עמוד {pRec.pageNumber}</span>
+                                </li>
+                              ))}
+                            </ul>
+                          </li>
+                        ))}
                       </ul>
                     </div>
-                  );
-                })}
+                  ))}
+                </div>
               </div>
-            </div>
-          )}
+            )}
+          </div>
 
-          {/* פעולות העתקה והדפסה */}
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-stone-500/20 pb-4">
             <span className={mutedClass + ' text-xs'}>
-              ממוין אוטומטית לפי קטגוריה ותת-קטגוריה ({recipesForBook.length} מתכונים)
+              ממוין אוטומטית לפי קטגוריה ותת-קטגוריה עם מספרי עמודים ({recipesForBook.length}{' '}
+              מתכונים)
             </span>
 
             <div className="flex items-center gap-2">
@@ -679,27 +723,30 @@ export default function RecipeBookVault({
             </div>
           </div>
 
-          {groupedBook.length === 0 ? (
+          {pagedBook.length === 0 ? (
             <div className={mutedClass + ' text-sm py-6 text-center'}>
               אין מתכונים להצגה עבור הבחירה הנוכחית.
             </div>
           ) : (
             <div className="space-y-6">
-              {groupedBook.map((catGroup, cIdx) => (
+              {pagedBook.map((catGroup) => (
                 <div
                   key={catGroup.category}
-                  id={'book-cat-' + cIdx}
+                  id={catGroup.domId}
                   className="space-y-4 scroll-mt-4"
                 >
-                  <h3 className="text-lg font-bold text-amber-500 border-r-4 border-amber-500 pr-3">
-                    {catGroup.category}
-                  </h3>
+                  <div className="flex items-center justify-between border-r-4 border-amber-500 pr-3">
+                    <h3 className="text-lg font-bold text-amber-500">{catGroup.category}</h3>
+                    <span className="text-xs font-bold px-2.5 py-0.5 rounded-full bg-amber-500/15 text-amber-500">
+                      עמוד {catGroup.pageNumber}
+                    </span>
+                  </div>
 
                   <div className="space-y-4 pr-3">
-                    {catGroup.subGroups.map((subGroup, sIdx) => (
+                    {catGroup.subGroups.map((subGroup) => (
                       <div
                         key={catGroup.category + '-' + subGroup.subCategory}
-                        id={'book-sub-' + cIdx + '-' + sIdx}
+                        id={subGroup.domId}
                         className={
                           'p-4 rounded-xl border space-y-3 scroll-mt-4 ' +
                           (darkMode
@@ -707,12 +754,18 @@ export default function RecipeBookVault({
                             : 'bg-amber-50/20 border-amber-200/70')
                         }
                       >
-                        <h4 className="font-bold text-sm">
-                          {catGroup.category} — {subGroup.subCategory} ({subGroup.recipes.length})
-                        </h4>
+                        <div className="flex items-center justify-between">
+                          <h4 className="font-bold text-sm">
+                            {catGroup.category} — {subGroup.subCategory} ({subGroup.recipes.length})
+                          </h4>
+                          <span className={mutedClass + ' text-xs font-bold'}>
+                            עמוד {subGroup.pageNumber}
+                          </span>
+                        </div>
 
                         <div className="space-y-3">
-                          {subGroup.recipes.map((rec) => {
+                          {subGroup.recipes.map((pRec) => {
+                            const rec = pRec.recipe;
                             const factor =
                               rec.originalServings > 0
                                 ? rec.targetServings / rec.originalServings
@@ -738,21 +791,25 @@ export default function RecipeBookVault({
                             return (
                               <article
                                 key={rec.id}
+                                id={pRec.domId}
                                 className={
-                                  'p-4 rounded-xl border space-y-2 ' +
+                                  'p-4 rounded-xl border space-y-2 scroll-mt-4 ' +
                                   (darkMode
                                     ? 'bg-slate-900 border-slate-800'
                                     : 'bg-white border-stone-200')
                                 }
                               >
-                                <div className="flex items-center justify-between gap-2">
+                                <div className="flex items-center justify-between gap-2 border-b border-stone-500/15 pb-2">
                                   <h5 className="font-bold text-base">
                                     {rec.favorite ? '⭐ ' : ''}
                                     {rec.title}
                                   </h5>
-                                  <span className={mutedClass + ' text-xs'}>
-                                    {rec.targetServings} מנות
-                                  </span>
+                                  <div className="flex items-center gap-2 text-xs">
+                                    <span className={mutedClass}>{rec.targetServings} מנות</span>
+                                    <span className="px-2 py-0.5 rounded-md bg-amber-500/15 text-amber-500 font-bold">
+                                      עמוד {pRec.pageNumber}
+                                    </span>
+                                  </div>
                                 </div>
 
                                 {ings.length > 0 && (
@@ -776,6 +833,18 @@ export default function RecipeBookVault({
                                     </ol>
                                   </div>
                                 )}
+
+                                <div
+                                  className={
+                                    mutedClass +
+                                    ' pt-2 border-t border-stone-500/10 text-[11px] flex justify-between'
+                                  }
+                                >
+                                  <span>
+                                    {rec.category} / {rec.subCategory}
+                                  </span>
+                                  <span className="font-bold">עמוד {pRec.pageNumber}</span>
+                                </div>
                               </article>
                             );
                           })}

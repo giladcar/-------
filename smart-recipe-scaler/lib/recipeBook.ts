@@ -17,6 +17,26 @@ export interface SavedRecipeItem {
 
 export type BookExportScope = 'all' | 'selected' | 'favorites';
 
+export interface BookPagedRecipe {
+  recipe: SavedRecipeItem;
+  pageNumber: number;
+  domId: string;
+}
+
+export interface BookPagedSubGroup {
+  subCategory: string;
+  pageNumber: number;
+  domId: string;
+  recipes: BookPagedRecipe[];
+}
+
+export interface BookPagedCategory {
+  category: string;
+  pageNumber: number;
+  domId: string;
+  subGroups: BookPagedSubGroup[];
+}
+
 const STORAGE_KEY = 'smart_recipe_scaler_book_v1';
 
 export const DEFAULT_CATEGORIES: Record<string, string[]> = {
@@ -78,4 +98,48 @@ export function groupRecipesByCategory(items: SavedRecipeItem[]): Array<{
           recipes,
         })),
     }));
+}
+
+export function buildPagedBook(items: SavedRecipeItem[]): BookPagedCategory[] {
+  const baseGroups = groupRecipesByCategory(items);
+  let currentPage = 2; // עמוד 1 הוא הכריכה ותוכן העניינים
+
+  return baseGroups.map((catGroup, cIdx) => {
+    const catPage = currentPage;
+    const catDomId = 'book-cat-' + cIdx;
+
+    const pagedSubGroups: BookPagedSubGroup[] = catGroup.subGroups.map((subGroup, sIdx) => {
+      const subPage = currentPage;
+      const subDomId = 'book-sub-' + cIdx + '-' + sIdx;
+
+      const pagedRecipes: BookPagedRecipe[] = subGroup.recipes.map((rec, rIdx) => {
+        if (rIdx > 0) {
+          currentPage += 1;
+        }
+        const recPage = currentPage;
+        const recDomId = 'book-rec-' + cIdx + '-' + sIdx + '-' + rIdx;
+        return {
+          recipe: rec,
+          pageNumber: recPage,
+          domId: recDomId,
+        };
+      });
+
+      currentPage += 1;
+
+      return {
+        subCategory: subGroup.subCategory,
+        pageNumber: subPage,
+        domId: subDomId,
+        recipes: pagedRecipes,
+      };
+    });
+
+    return {
+      category: catGroup.category,
+      pageNumber: catPage,
+      domId: catDomId,
+      subGroups: pagedSubGroups,
+    };
+  });
 }
