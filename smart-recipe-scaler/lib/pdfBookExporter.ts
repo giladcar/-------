@@ -309,7 +309,7 @@ function renderPagesToJpegDataUrls(params: {
               rec.convertToGrams,
               measureSystem
             ).displayText;
-            for (const iLine of wrapHebrewLine(ctx, '• ' + scaled, colWidth - 14)) {
+            for (const iLine of wrapHebrewLine(ctx, '• ' + scaled, colWidth - 24)) {
               allItems.push({
                 text: iLine,
                 font: '19px Arial, sans-serif',
@@ -330,7 +330,7 @@ function renderPagesToJpegDataUrls(params: {
             lineHeight: 26,
           });
           steps.forEach((st, idx) => {
-            for (const sLine of wrapHebrewLine(ctx, idx + 1 + '. ' + st, colWidth - 14)) {
+            for (const sLine of wrapHebrewLine(ctx, idx + 1 + '. ' + st, colWidth - 24)) {
               allItems.push({
                 text: sLine,
                 font: '19px Arial, sans-serif',
@@ -366,23 +366,21 @@ function renderPagesToJpegDataUrls(params: {
     ctx.stroke();
     ctx.restore();
 
-    // חלוקה לשני טורים כך שגם רשימות בינוניות/ארוכות ימלאו את שני צידי הדף
-    const splitIndex = allItems.length > 20 ? Math.ceil(allItems.length / 2) : allItems.length;
-
+    // מילוי הטור הימני עד התחתית וגלישה מסודרת לראש הטור השמאלי עד התחתית
     let currentX = rightColX;
     let y = startY;
     let movedToLeftCol = false;
 
     for (let idx = 0; idx < allItems.length; idx++) {
       const item = allItems[idx];
-      if (!movedToLeftCol && (idx >= splitIndex || y + item.lineHeight > bottomLimit)) {
-        currentX = leftColX;
-        y = startY;
-        movedToLeftCol = true;
-      }
-
       if (y + item.lineHeight > bottomLimit) {
-        break;
+        if (!movedToLeftCol) {
+          currentX = leftColX;
+          y = startY;
+          movedToLeftCol = true;
+        } else {
+          break;
+        }
       }
 
       if (item.text) {
