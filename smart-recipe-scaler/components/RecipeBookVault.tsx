@@ -144,7 +144,10 @@ export default function RecipeBookVault({
     return savedRecipes;
   }, [savedRecipes, exportScope, selectedIds]);
 
-  const pagedBook = useMemo(() => buildPagedBook(recipesForBook), [recipesForBook]);
+  const { sheets, toc } = useMemo(
+    () => buildFixedSizeBookPages(recipesForBook),
+    [recipesForBook]
+  );
 
   const scrollToSection = (elementId: string) => {
     if (typeof document === 'undefined') return;
@@ -155,61 +158,38 @@ export default function RecipeBookVault({
   };
 
   const buildBookPlainText = () => {
-    if (pagedBook.length === 0) return 'אין מתכונים תואמים להצגה בספר המתכונים.';
+    if (sheets.length === 0) return 'אין מתכונים תואמים להצגה בספר המתכונים.';
     const lines: string[] = [
       '📖 ' + (bookTitle.trim() || 'ספר המתכונים שלי'),
-      'עמוד 1 — כריכה ותוכן עניינים | תאריך הפקה: ' + generatedDateLabel,
+      'עמוד 1 — כריכה ותוכן עניינים | גודל עמוד קבוע: ' +
+        FIXED_PAGE_CAPACITY_LINES +
+        ' שורות | תאריך: ' +
+        generatedDateLabel,
       '====================================',
-      'תוכן עניינים:',
     ];
 
-    for (const catGroup of pagedBook) {
-      lines.push('• ' + catGroup.category + ' — עמוד ' + catGroup.pageNumber);
-      for (const subGroup of catGroup.subGroups) {
-        lines.push('   - ' + subGroup.subCategory + ' (עמוד ' + subGroup.pageNumber + ')');
-        for (const pRec of subGroup.recipes) {
-          lines.push('      * ' + pRec.recipe.title + ' — עמוד ' + pRec.pageNumber);
-        }
-      }
-    }
-
-    for (const catGroup of pagedBook) {
-      lines.push('\n📁 ' + catGroup.category + ' (עמוד ' + catGroup.pageNumber + ')');
-      for (const subGroup of catGroup.subGroups) {
-        lines.push('  📂 ' + subGroup.subCategory + ' (עמוד ' + subGroup.pageNumber + ')');
-        for (const pRec of subGroup.recipes) {
-          const rec = pRec.recipe;
-          const factor = rec.originalServings > 0 ? rec.targetServings / rec.originalServings : 1;
-          const scaledIngs = rec.rawIngredients
-            .split('\n')
-            .filter((l) => l.trim())
-            .map(
-              (l) =>
-                '      • ' +
-                parseAndScaleLine(l, factor, rec.dietMode, rec.convertToGrams, measureSystem)
-                  .displayText
-            );
-          const steps = rec.rawSteps
-            .split('\n')
-            .filter((l) => l.trim())
-            .map((s, i) => '      ' + (i + 1) + '. ' + s.trim());
-
+    for (const sheet of sheets) {
+      lines.push(
+        '\n--- עמוד ' + sheet.pageNumber + ' (' + sheet.usedLines + '/' + sheet.capacity + ') ---'
+      );
+      for (const blk of sheet.blocks) {
+        if (blk.kind === 'category') {
+          lines.push('📁 ' + blk.title + ' [עמוד ' + blk.pageNumber + ']');
+        } else if (blk.kind === 'subcategory') {
           lines.push(
-            '    • [עמוד ' +
-              pRec.pageNumber +
-              '] ' +
-              (rec.favorite ? '⭐ ' : '') +
-              rec.title +
-              ' (' +
-              rec.targetServings +
-              ' מנות)'
+            '  📂 ' + blk.category + ' ← ' + blk.title + ' [עמוד ' + blk.pageNumber + ']'
           );
-          lines.push('      מצרכים:');
-          lines.push(...scaledIngs);
-          if (steps.length > 0) {
-            lines.push('      אופן ההכנה:');
-            lines.push(...steps);
-          }
+        } else if (blk.kind === 'recipe-part' && blk.recipe) {
+          lines.push(
+            '    • ' +
+              blk.recipe.title +
+              (blk.isContinuation ? ' (המשך)' : '') +
+              ' [עמוד ' +
+              blk.pageNumber +
+              ']'
+          );
+          (blk.ingredients || []).forEach((ing) => lines.push('        * ' + ing));
+          (blk.steps || []).forEach((st, i) => lines.push('        ' + (i + 1) + '. ' + st));
         }
       }
     }
@@ -571,13 +551,15 @@ export default function RecipeBookVault({
                           <button
                             type="button"
                             onClick={() => {
-                            if (
-                              typeof window === 'undefined' ||
-                              window.confirm('האם אתה בטוח שאתה רוצה למחוק את "' + rec.title + '"?')
-                            ) {
-                              onDeleteRecipe(rec.id);
-                            }
-                          }}
+                              if (
+                                typeof window === 'undefined' ||
+                                window.confirm(
+                                  'האם אתה בטוח שאתה רוצה למחוק את "' + rec.title + '"?'
+                                )
+                              ) {
+                                onDeleteRecipe(rec.id);
+                              }
+                            }}
                             className="px-2.5 py-1.5 rounded-lg bg-red-600/15 hover:bg-red-600 text-red-500 hover:text-white font-semibold text-xs transition-colors cursor-pointer"
                           >
                             מחק
@@ -595,7 +577,6 @@ export default function RecipeBookVault({
 
       {bookOpen && (
         <section className={'p-6 rounded-2xl shadow-md border space-y-6 ' + surfaceClass}>
-          {/* עמוד 1: כריכה ותוכן עניינים עם גודל עמוד קבוע */}
           <div
             style={{ pageBreakAfter: 'always', breakAfter: 'page' }}
             className={
@@ -744,7 +725,7 @@ export default function RecipeBookVault({
 
           {sheets.length === 0 ? (
             <div className={mutedClass + ' text-sm py-6 text-center'}>
-              אין מתכונים להצגה עבור הבחירה הנוכית.
+              אין מתכונים להצגה עבור הבחירה הנוכחית.
             </div>
           ) : (
             <div className="space-y-6">
