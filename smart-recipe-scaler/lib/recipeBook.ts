@@ -18,7 +18,7 @@ export interface SavedRecipeItem {
 export type BookExportScope = 'all' | 'selected' | 'favorites';
 
 // גודל דף קבוע ביחס דף PDF (A4) ובמכסת שורות קבועה
-export const FIXED_PAGE_CAPACITY_LINES = 32;
+export const FIXED_PAGE_CAPACITY_LINES = 42;
 
 export interface BookPageBlock {
   kind: 'category-banner' | 'subcategory-banner' | 'recipe-part';
