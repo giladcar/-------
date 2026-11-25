@@ -24,6 +24,7 @@ export default function RootLayout({
 
 const engineCode = `export type DietMode = 'none' | 'vegan' | 'gluten-free' | 'dairy-free';
 export type TempUnit = 'C' | 'F';
+export type MeasureSystem = 'metric' | 'us';
 
 export interface ParsedIngredient {
   originalLine: string;
@@ -223,11 +224,88 @@ export function formatCleanNumber(num: number): string {
   return Number.isInteger(num) ? num.toString() : num.toFixed(1).replace(/\\.0$/, '');
 }
 
+function formatUsMeasurement(
+  scaledAmount: number,
+  currentUnit: string | null,
+  gramsEquivalent: number | null,
+  ingredientName: string
+): { text: string; extraHint: string } {
+  if (!currentUnit) {
+    return { text: formatCleanNumber(scaledAmount) + ' ' + ingredientName, extraHint: '' };
+  }
+
+  const u = currentUnit.toLowerCase();
+
+  if (u === 'כוס' || u === 'כוסות' || u === 'cup' || u === 'cups') {
+    const unitWord = Math.abs(scaledAmount - 1) < 0.05 ? 'cup' : 'cups';
+    const gHint = gramsEquivalent !== null ? ' (~' + gramsEquivalent + 'g)' : '';
+    return {
+      text: formatCleanNumber(scaledAmount) + ' ' + unitWord + ' ' + ingredientName + gHint,
+      extraHint: '',
+    };
+  }
+
+  if (u === 'כף' || u === 'כפות' || u === 'tbsp') {
+    const mlVal = scaledAmount * 15;
+    const ozVal = mlVal / 29.5735;
+    return {
+      text: formatCleanNumber(scaledAmount) + ' tbsp ' + ingredientName,
+      extraHint: ' (' + Math.round(mlVal) + 'ml / ' + ozVal.toFixed(1) + 'oz)',
+    };
+  }
+
+  if (u === 'כפית' || u === 'כפיות' || u === 'tsp') {
+    const mlVal = scaledAmount * 5;
+    return {
+      text: formatCleanNumber(scaledAmount) + ' tsp ' + ingredientName,
+      extraHint: ' (' + Math.round(mlVal) + 'ml)',
+    };
+  }
+
+  if (u === 'מ"ל' || u === 'מל' || u === 'ml') {
+    const ozVal = scaledAmount / 29.5735;
+    return {
+      text: ozVal.toFixed(1) + ' oz ' + ingredientName,
+      extraHint: ' (' + Math.round(scaledAmount) + 'ml)',
+    };
+  }
+
+  if (u === 'ליטר' || u === 'liter') {
+    const ozVal = (scaledAmount * 1000) / 29.5735;
+    return {
+      text: ozVal.toFixed(1) + ' fl oz ' + ingredientName,
+      extraHint: ' (' + Math.round(scaledAmount * 1000) + 'ml)',
+    };
+  }
+
+  if (u === 'גרם' || u === "ג'" || u === 'g' || u === 'gram' || u === 'grams') {
+    const ozVal = scaledAmount / 28.3495;
+    return {
+      text: ozVal.toFixed(1) + ' oz ' + ingredientName,
+      extraHint: ' (' + Math.round(scaledAmount) + 'g)',
+    };
+  }
+
+  if (u === 'ק"ג' || u === 'קילו' || u === 'kg') {
+    const ozVal = (scaledAmount * 1000) / 28.3495;
+    return {
+      text: ozVal.toFixed(1) + ' oz ' + ingredientName,
+      extraHint: ' (' + Math.round(scaledAmount * 1000) + 'g)',
+    };
+  }
+
+  return {
+    text: formatCleanNumber(scaledAmount) + ' ' + currentUnit + ' ' + ingredientName,
+    extraHint: '',
+  };
+}
+
 export function parseAndScaleLine(
   line: string,
   scaleFactor: number,
   dietMode: DietMode,
-  convertToGrams: boolean
+  convertToGrams: boolean,
+  measureSystem: MeasureSystem = 'metric'
 ): ParsedIngredient {
   const trimmed = line.trim().replace(/^[-*•]\\s*/, '');
   if (!trimmed) {
@@ -332,7 +410,10 @@ export function parseAndScaleLine(
 
   let displayText = '';
   if (scaledAmount !== null) {
-    if (convertToGrams && gramsEquivalent !== null && currentUnit && VOLUME_TO_ML[currentUnit]) {
+    if (measureSystem === 'us') {
+      const usRes = formatUsMeasurement(scaledAmount, currentUnit, gramsEquivalent, ingredientName);
+      displayText = usRes.text + usRes.extraHint;
+    } else if (convertToGrams && gramsEquivalent !== null && currentUnit && VOLUME_TO_ML[currentUnit]) {
       displayText = gramsEquivalent + ' גרם ' + ingredientName;
     } else {
       const formattedNum = formatCleanNumber(scaledAmount);
@@ -656,7 +737,7 @@ import {
   BookExportScope,
   groupRecipesByCategory,
 } from '@/lib/recipeBook';
-import { parseAndScaleLine } from '@/lib/recipeEngine';
+import { parseAndScaleLine, MeasureSystem } from '@/lib/recipeEngine';
 
 interface RecipeBookVaultProps {
   savedRecipes: SavedRecipeItem[];
@@ -666,20 +747,24 @@ interface RecipeBookVaultProps {
     subCategory: string;
     favorite: boolean;
   }) => void;
+  onUpdateRecipe: (updated: SavedRecipeItem) => void;
   onLoadRecipeToScaler: (item: SavedRecipeItem) => void;
   onToggleFavorite: (id: string) => void;
   onDeleteRecipe: (id: string) => void;
   onUpdateRecipeCategory: (id: string, category: string, subCategory: string) => void;
+  measureSystem: MeasureSystem;
   darkMode: boolean;
 }
 
 export default function RecipeBookVault({
   savedRecipes,
   onSaveCurrentRecipe,
+  onUpdateRecipe,
   onLoadRecipeToScaler,
   onToggleFavorite,
   onDeleteRecipe,
   onUpdateRecipeCategory,
+  measureSystem,
   darkMode,
 }: RecipeBookVaultProps) {
   const [newTitle, setNewTitle] = useState<string>('');
@@ -689,10 +774,30 @@ export default function RecipeBookVault({
   const [customSubCategory, setCustomSubCategory] = useState<string>('');
   const [newFavorite, setNewFavorite] = useState<boolean>(false);
 
+  // עריכה ישירה של מתכון שמור
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editTitle, setEditTitle] = useState<string>('');
+  const [editCategory, setEditCategory] = useState<string>('');
+  const [editSubCategory, setEditSubCategory] = useState<string>('');
+  const [editOriginalServings, setEditOriginalServings] = useState<number>(4);
+  const [editTargetServings, setEditTargetServings] = useState<number>(4);
+  const [editIngredients, setEditIngredients] = useState<string>('');
+  const [editSteps, setEditSteps] = useState<string>('');
+
+  // כריכה, תוכן עניינים וייצוא ספר מתכונים
   const [selectedIds, setSelectedIds] = useState<Record<string, boolean>>({});
   const [exportScope, setExportScope] = useState<BookExportScope>('all');
   const [bookOpen, setBookOpen] = useState<boolean>(false);
+  const [bookTitle, setBookTitle] = useState<string>('ספר המתכונים המשפחתי שלי');
   const [copiedBook, setCopiedBook] = useState<boolean>(false);
+
+  const generatedDateLabel = useMemo(() => {
+    return new Date().toLocaleDateString('he-IL', {
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+    });
+  }, []);
 
   const availableCategories = useMemo(() => {
     const set = new Set<string>(Object.keys(DEFAULT_CATEGORIES));
@@ -730,6 +835,31 @@ export default function RecipeBookVault({
     setNewFavorite(false);
   };
 
+  const startEditingRecipe = (rec: SavedRecipeItem) => {
+    setEditingId(rec.id);
+    setEditTitle(rec.title);
+    setEditCategory(rec.category);
+    setEditSubCategory(rec.subCategory);
+    setEditOriginalServings(rec.originalServings);
+    setEditTargetServings(rec.targetServings);
+    setEditIngredients(rec.rawIngredients);
+    setEditSteps(rec.rawSteps);
+  };
+
+  const saveEditedRecipe = (original: SavedRecipeItem) => {
+    onUpdateRecipe({
+      ...original,
+      title: editTitle.trim() || original.title,
+      category: editCategory.trim() || 'כללי',
+      subCategory: editSubCategory.trim() || 'כללי',
+      originalServings: Math.max(1, editOriginalServings || 1),
+      targetServings: Math.max(1, editTargetServings || 1),
+      rawIngredients: editIngredients,
+      rawSteps: editSteps,
+    });
+    setEditingId(null);
+  };
+
   const toggleSelectId = (id: string) => {
     setSelectedIds((prev) => ({ ...prev, [id]: !prev[id] }));
   };
@@ -746,9 +876,29 @@ export default function RecipeBookVault({
 
   const groupedBook = useMemo(() => groupRecipesByCategory(recipesForBook), [recipesForBook]);
 
+  const scrollToSection = (elementId: string) => {
+    if (typeof document === 'undefined') return;
+    const el = document.getElementById(elementId);
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  };
+
   const buildBookPlainText = () => {
     if (groupedBook.length === 0) return 'אין מתכונים תואמים להצגה בספר המתכונים.';
-    const lines: string[] = ['📖 ספר המתכונים שלי', '===================================='];
+    const lines: string[] = [
+      '📖 ' + (bookTitle.trim() || 'ספר המתכונים שלי'),
+      'תאריך הפקה: ' + generatedDateLabel,
+      '====================================',
+      'תוכן עניינים:',
+    ];
+
+    for (const catGroup of groupedBook) {
+      lines.push('• ' + catGroup.category);
+      for (const subGroup of catGroup.subGroups) {
+        lines.push('   - ' + subGroup.subCategory + ' (' + subGroup.recipes.length + ')');
+      }
+    }
 
     for (const catGroup of groupedBook) {
       lines.push('\\n📁 ' + catGroup.category);
@@ -759,13 +909,20 @@ export default function RecipeBookVault({
           const scaledIngs = rec.rawIngredients
             .split('\\n')
             .filter((l) => l.trim())
-            .map((l) => '      • ' + parseAndScaleLine(l, factor, rec.dietMode, rec.convertToGrams).displayText);
+            .map(
+              (l) =>
+                '      • ' +
+                parseAndScaleLine(l, factor, rec.dietMode, rec.convertToGrams, measureSystem)
+                  .displayText
+            );
           const steps = rec.rawSteps
             .split('\\n')
             .filter((l) => l.trim())
             .map((s, i) => '      ' + (i + 1) + '. ' + s.trim());
 
-          lines.push('    • ' + (rec.favorite ? '⭐ ' : '') + rec.title + ' (' + rec.targetServings + ' מנות)');
+          lines.push(
+            '    • ' + (rec.favorite ? '⭐ ' : '') + rec.title + ' (' + rec.targetServings + ' מנות)'
+          );
           lines.push('      מצרכים:');
           lines.push(...scaledIngs);
           if (steps.length > 0) {
@@ -823,7 +980,8 @@ export default function RecipeBookVault({
               onChange={(e) => {
                 const nextCat = e.target.value;
                 setSelectedCategory(nextCat);
-                const firstSub = (DEFAULT_CATEGORIES[nextCat] && DEFAULT_CATEGORIES[nextCat][0]) || 'כללי';
+                const firstSub =
+                  (DEFAULT_CATEGORIES[nextCat] && DEFAULT_CATEGORIES[nextCat][0]) || 'כללי';
                 setSelectedSubCategory(firstSub);
               }}
               className={'w-full px-3 py-2 border rounded-xl text-sm ' + inputClass}
@@ -885,19 +1043,29 @@ export default function RecipeBookVault({
         </form>
       </section>
 
-      {/* רשימת מתכונים שמורים, מועדפים, בחירה ומחיקה */}
+      {/* רשימת מתכונים שמורים, עריכה ישירה, מועדפים, בחירה ומחיקה */}
       <section className={'p-6 rounded-2xl shadow-sm border space-y-4 ' + surfaceClass}>
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
           <div>
             <h2 className="font-bold text-lg">
-              מתכונים שמורים ({savedRecipes.length}) • מועדפים ({savedRecipes.filter((r) => r.favorite).length})
+              מתכונים שמורים ({savedRecipes.length}) • מועדפים (
+              {savedRecipes.filter((r) => r.favorite).length})
             </h2>
             <p className={mutedClass + ' text-xs'}>
-              סמן תיבת בחירה למתכונים שתרצה לכלול בייצוא &ldquo;רק נבחרים&rdquo;, או סמן ⭐ למועדפים
+              סמן תיבת בחירה למתכונים לייצוא &ldquo;רק נבחרים&rdquo;, ערוך מתכון ישירות, או סמן ⭐ למועדפים
             </p>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
+            <input
+              type="text"
+              value={bookTitle}
+              onChange={(e) => setBookTitle(e.target.value)}
+              placeholder="כותרת לספר המתכונים..."
+              className={'w-48 px-3 py-2 border rounded-xl text-xs ' + inputClass}
+              title="כותרת ספר המתכונים"
+            />
+
             <select
               value={exportScope}
               onChange={(e) => setExportScope(e.target.value as BookExportScope)}
@@ -926,105 +1094,212 @@ export default function RecipeBookVault({
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             {savedRecipes.map((rec) => {
               const isSelected = !!selectedIds[rec.id];
+              const isEditing = editingId === rec.id;
+
               return (
                 <div
                   key={rec.id}
                   className={
                     'p-4 rounded-xl border flex flex-col justify-between gap-3 ' +
-                    (darkMode ? 'bg-slate-800/60 border-slate-700' : 'bg-stone-50/70 border-stone-200')
+                    (darkMode
+                      ? 'bg-slate-800/60 border-slate-700'
+                      : 'bg-stone-50/70 border-stone-200')
                   }
                 >
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="flex items-start gap-2.5">
+                  {isEditing ? (
+                    <div className="space-y-2.5">
                       <input
-                        type="checkbox"
-                        checked={isSelected}
-                        onChange={() => toggleSelectId(rec.id)}
-                        className="mt-1 rounded accent-amber-500 cursor-pointer"
-                        title="בחר לספר המתכונים"
+                        type="text"
+                        value={editTitle}
+                        onChange={(e) => setEditTitle(e.target.value)}
+                        placeholder="שם המתכון"
+                        className={'w-full px-3 py-1.5 border rounded-lg text-sm font-bold ' + inputClass}
                       />
-                      <div>
-                        <div className="font-bold text-base flex items-center gap-1.5">
-                          <span>{rec.title}</span>
-                          {rec.favorite && <span className="text-amber-400">⭐</span>}
+                      <div className="grid grid-cols-2 gap-2">
+                        <input
+                          type="text"
+                          value={editCategory}
+                          onChange={(e) => setEditCategory(e.target.value)}
+                          placeholder="קטגוריה"
+                          className={'w-full px-2.5 py-1.5 border rounded-lg text-xs ' + inputClass}
+                        />
+                        <input
+                          type="text"
+                          value={editSubCategory}
+                          onChange={(e) => setEditSubCategory(e.target.value)}
+                          placeholder="תת-קטגוריה"
+                          className={'w-full px-2.5 py-1.5 border rounded-lg text-xs ' + inputClass}
+                        />
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <label className={mutedClass + ' text-[11px]'}>מנות במקור:</label>
+                          <input
+                            type="number"
+                            min={1}
+                            value={editOriginalServings}
+                            onChange={(e) => setEditOriginalServings(Number(e.target.value))}
+                            className={'w-full px-2 py-1 border rounded-lg text-xs text-center ' + inputClass}
+                          />
                         </div>
-                        <div className="flex flex-wrap gap-1.5 mt-1">
-                          <span className="text-[11px] px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-500 font-semibold">
-                            {rec.category}
-                          </span>
-                          <span
-                            className={
-                              'text-[11px] px-2 py-0.5 rounded-full font-medium ' +
-                              (darkMode ? 'bg-slate-700 text-slate-300' : 'bg-stone-200/80 text-stone-700')
-                            }
-                          >
-                            {rec.subCategory}
-                          </span>
-                          <span className={mutedClass + ' text-[11px] py-0.5'}>
-                            {rec.targetServings} מנות
-                          </span>
+                        <div>
+                          <label className={mutedClass + ' text-[11px]'}>מנות רצוי:</label>
+                          <input
+                            type="number"
+                            min={1}
+                            value={editTargetServings}
+                            onChange={(e) => setEditTargetServings(Number(e.target.value))}
+                            className={'w-full px-2 py-1 border rounded-lg text-xs text-center ' + inputClass}
+                          />
                         </div>
                       </div>
+                      <div>
+                        <label className={mutedClass + ' text-[11px]'}>מצרכים:</label>
+                        <textarea
+                          rows={4}
+                          value={editIngredients}
+                          onChange={(e) => setEditIngredients(e.target.value)}
+                          className={'w-full p-2 border rounded-lg text-xs ' + inputClass}
+                        />
+                      </div>
+                      <div>
+                        <label className={mutedClass + ' text-[11px]'}>שלבי הכנה:</label>
+                        <textarea
+                          rows={3}
+                          value={editSteps}
+                          onChange={(e) => setEditSteps(e.target.value)}
+                          className={'w-full p-2 border rounded-lg text-xs ' + inputClass}
+                        />
+                      </div>
+                      <div className="flex justify-end gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setEditingId(null)}
+                          className={
+                            'px-3 py-1.5 rounded-lg text-xs font-medium cursor-pointer ' +
+                            (darkMode ? 'bg-slate-700 text-slate-200' : 'bg-stone-200 text-stone-700')
+                          }
+                        >
+                          ביטול
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => saveEditedRecipe(rec)}
+                          className="px-3.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs cursor-pointer"
+                        >
+                          שמור שינויים
+                        </button>
+                      </div>
                     </div>
+                  ) : (
+                    <>
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="flex items-start gap-2.5">
+                          <input
+                            type="checkbox"
+                            checked={isSelected}
+                            onChange={() => toggleSelectId(rec.id)}
+                            className="mt-1 rounded accent-amber-500 cursor-pointer"
+                            title="בחר לספר המתכונים"
+                          />
+                          <div>
+                            <div className="font-bold text-base flex items-center gap-1.5">
+                              <span>{rec.title}</span>
+                              {rec.favorite && <span className="text-amber-400">⭐</span>}
+                            </div>
+                            <div className="flex flex-wrap gap-1.5 mt-1">
+                              <span className="text-[11px] px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-500 font-semibold">
+                                {rec.category}
+                              </span>
+                              <span
+                                className={
+                                  'text-[11px] px-2 py-0.5 rounded-full font-medium ' +
+                                  (darkMode
+                                    ? 'bg-slate-700 text-slate-300'
+                                    : 'bg-stone-200/80 text-stone-700')
+                                }
+                              >
+                                {rec.subCategory}
+                              </span>
+                              <span className={mutedClass + ' text-[11px] py-0.5'}>
+                                {rec.targetServings} מנות
+                              </span>
+                            </div>
+                          </div>
+                        </div>
 
-                    <button
-                      type="button"
-                      onClick={() => onToggleFavorite(rec.id)}
-                      className="text-lg leading-none cursor-pointer px-1"
-                      title={rec.favorite ? 'הסר ממועדפים' : 'הוסף למועדפים'}
-                    >
-                      {rec.favorite ? '⭐' : '☆'}
-                    </button>
-                  </div>
+                        <button
+                          type="button"
+                          onClick={() => onToggleFavorite(rec.id)}
+                          className="text-lg leading-none cursor-pointer px-1"
+                          title={rec.favorite ? 'הסר ממועדפים' : 'הוסף למועדפים'}
+                        >
+                          {rec.favorite ? '⭐' : '☆'}
+                        </button>
+                      </div>
 
-                  <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-stone-500/15">
-                    <div className="flex items-center gap-1.5 text-xs">
-                      <input
-                        type="text"
-                        defaultValue={rec.category}
-                        onBlur={(e) =>
-                          onUpdateRecipeCategory(
-                            rec.id,
-                            e.target.value.trim() || rec.category,
-                            rec.subCategory
-                          )
-                        }
-                        className={'w-24 px-2 py-1 border rounded-lg text-[11px] ' + inputClass}
-                        title="שנה קטגוריה"
-                      />
-                      <span className={mutedClass}>←</span>
-                      <input
-                        type="text"
-                        defaultValue={rec.subCategory}
-                        onBlur={(e) =>
-                          onUpdateRecipeCategory(
-                            rec.id,
-                            rec.category,
-                            e.target.value.trim() || rec.subCategory
-                          )
-                        }
-                        className={'w-24 px-2 py-1 border rounded-lg text-[11px] ' + inputClass}
-                        title="שנה תת-קטגוריה"
-                      />
-                    </div>
+                      <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-stone-500/15">
+                        <div className="flex items-center gap-1.5 text-xs">
+                          <input
+                            type="text"
+                            defaultValue={rec.category}
+                            onBlur={(e) =>
+                              onUpdateRecipeCategory(
+                                rec.id,
+                                e.target.value.trim() || rec.category,
+                                rec.subCategory
+                              )
+                            }
+                            className={'w-24 px-2 py-1 border rounded-lg text-[11px] ' + inputClass}
+                            title="שנה קטגוריה"
+                          />
+                          <span className={mutedClass}>←</span>
+                          <input
+                            type="text"
+                            defaultValue={rec.subCategory}
+                            onBlur={(e) =>
+                              onUpdateRecipeCategory(
+                                rec.id,
+                                rec.category,
+                                e.target.value.trim() || rec.subCategory
+                              )
+                            }
+                            className={'w-24 px-2 py-1 border rounded-lg text-[11px] ' + inputClass}
+                            title="שנה תת-קטגוריה"
+                          />
+                        </div>
 
-                    <div className="flex items-center gap-1.5">
-                      <button
-                        type="button"
-                        onClick={() => onLoadRecipeToScaler(rec)}
-                        className="px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-stone-950 font-bold text-xs cursor-pointer"
-                      >
-                        פתח בממיר
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => onDeleteRecipe(rec.id)}
-                        className="px-2.5 py-1.5 rounded-lg bg-red-600/15 hover:bg-red-600 text-red-500 hover:text-white font-semibold text-xs transition-colors cursor-pointer"
-                      >
-                        מחק
-                      </button>
-                    </div>
-                  </div>
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => startEditingRecipe(rec)}
+                            className={
+                              'px-2.5 py-1.5 rounded-lg text-xs font-semibold border cursor-pointer ' +
+                              (darkMode
+                                ? 'bg-slate-700 border-slate-600 text-slate-200 hover:bg-slate-600'
+                                : 'bg-white border-stone-300 text-stone-700 hover:bg-stone-100')
+                            }
+                          >
+                            עריכה
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => onLoadRecipeToScaler(rec)}
+                            className="px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-stone-950 font-bold text-xs cursor-pointer"
+                          >
+                            פתח בממיר
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => onDeleteRecipe(rec.id)}
+                            className="px-2.5 py-1.5 rounded-lg bg-red-600/15 hover:bg-red-600 text-red-500 hover:text-white font-semibold text-xs transition-colors cursor-pointer"
+                          >
+                            מחק
+                          </button>
+                        </div>
+                      </div>
+                    </>
+                  )}
                 </div>
               );
             })}
@@ -1032,24 +1307,84 @@ export default function RecipeBookVault({
         )}
       </section>
 
-      {/* תצוגת ספר המתכונים הממוין לפי קטגוריות ותתי-קטגוריות */}
+      {/* כריכה, תוכן עניינים וספר מתכונים ממוין לפי קטגוריות ותתי-קטגוריות */}
       {bookOpen && (
-        <section className={'p-6 rounded-2xl shadow-md border space-y-5 ' + surfaceClass}>
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-stone-500/20 pb-4">
-            <div>
-              <h2 className="text-xl font-bold">
-                ספר מתכונים (
-                {exportScope === 'all'
-                  ? 'הכל'
-                  : exportScope === 'favorites'
-                  ? 'רק מועדפים'
-                  : 'רק נבחרים'}
-                )
-              </h2>
-              <p className={mutedClass + ' text-xs mt-0.5'}>
-                ממוין אוטומטית לפי קטגוריה ותת-קטגוריה ({recipesForBook.length} מתכונים)
-              </p>
+        <section className={'p-6 rounded-2xl shadow-md border space-y-6 ' + surfaceClass}>
+          {/* כריכת הספר */}
+          <div
+            className={
+              'p-6 rounded-2xl border text-center space-y-2 ' +
+              (darkMode
+                ? 'bg-gradient-to-b from-amber-500/15 to-slate-900 border-amber-500/30'
+                : 'bg-gradient-to-b from-amber-50 to-white border-amber-200')
+            }
+          >
+            <div className="text-xs font-bold uppercase tracking-wider text-amber-500">
+              מהדורת ספר מתכונים •{' '}
+              {exportScope === 'all'
+                ? 'כל המתכונים'
+                : exportScope === 'favorites'
+                ? 'מתכונים מועדפים'
+                : 'מתכונים נבחרים'}
             </div>
+            <h2 className="text-2xl md:text-3xl font-bold">
+              {bookTitle.trim() || 'ספר המתכונים שלי'}
+            </h2>
+            <p className={mutedClass + ' text-xs'}>
+              תאריך הפקה: {generatedDateLabel} • {recipesForBook.length} מתכונים • מידות:{' '}
+              {measureSystem === 'us' ? 'אמריקאיות (cup / tbsp / oz)' : 'מטריות / ישראליות'}
+            </p>
+          </div>
+
+          {/* תוכן עניינים מהיר */}
+          {groupedBook.length > 0 && (
+            <div
+              className={
+                'p-4 rounded-xl border space-y-3 ' +
+                (darkMode ? 'bg-slate-800/40 border-slate-700' : 'bg-stone-50 border-stone-200')
+              }
+            >
+              <h3 className="font-bold text-base">תוכן עניינים</h3>
+              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+                {groupedBook.map((catGroup, cIdx) => {
+                  const catDomId = 'book-cat-' + cIdx;
+                  return (
+                    <div key={catGroup.category} className="space-y-1">
+                      <button
+                        type="button"
+                        onClick={() => scrollToSection(catDomId)}
+                        className="font-bold text-sm text-amber-500 hover:underline cursor-pointer text-right"
+                      >
+                        {catGroup.category}
+                      </button>
+                      <ul className="space-y-1 pr-3 text-xs">
+                        {catGroup.subGroups.map((subGroup, sIdx) => {
+                          const subDomId = 'book-sub-' + cIdx + '-' + sIdx;
+                          return (
+                            <li key={subGroup.subCategory}>
+                              <button
+                                type="button"
+                                onClick={() => scrollToSection(subDomId)}
+                                className={mutedClass + ' hover:underline cursor-pointer text-right'}
+                              >
+                                {subGroup.subCategory} ({subGroup.recipes.length})
+                              </button>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* פעולות העתקה והדפסה */}
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-stone-500/20 pb-4">
+            <span className={mutedClass + ' text-xs'}>
+              ממוין אוטומטית לפי קטגוריה ותת-קטגוריה ({recipesForBook.length} מתכונים)
+            </span>
 
             <div className="flex items-center gap-2">
               <button
@@ -1080,19 +1415,26 @@ export default function RecipeBookVault({
             </div>
           ) : (
             <div className="space-y-6">
-              {groupedBook.map((catGroup) => (
-                <div key={catGroup.category} className="space-y-4">
+              {groupedBook.map((catGroup, cIdx) => (
+                <div
+                  key={catGroup.category}
+                  id={'book-cat-' + cIdx}
+                  className="space-y-4 scroll-mt-4"
+                >
                   <h3 className="text-lg font-bold text-amber-500 border-r-4 border-amber-500 pr-3">
                     {catGroup.category}
                   </h3>
 
                   <div className="space-y-4 pr-3">
-                    {catGroup.subGroups.map((subGroup) => (
+                    {catGroup.subGroups.map((subGroup, sIdx) => (
                       <div
                         key={catGroup.category + '-' + subGroup.subCategory}
+                        id={'book-sub-' + cIdx + '-' + sIdx}
                         className={
-                          'p-4 rounded-xl border space-y-3 ' +
-                          (darkMode ? 'bg-slate-800/40 border-slate-700/80' : 'bg-amber-50/20 border-amber-200/70')
+                          'p-4 rounded-xl border space-y-3 scroll-mt-4 ' +
+                          (darkMode
+                            ? 'bg-slate-800/40 border-slate-700/80'
+                            : 'bg-amber-50/20 border-amber-200/70')
                         }
                       >
                         <h4 className="font-bold text-sm">
@@ -1102,14 +1444,21 @@ export default function RecipeBookVault({
                         <div className="space-y-3">
                           {subGroup.recipes.map((rec) => {
                             const factor =
-                              rec.originalServings > 0 ? rec.targetServings / rec.originalServings : 1;
+                              rec.originalServings > 0
+                                ? rec.targetServings / rec.originalServings
+                                : 1;
                             const ings = rec.rawIngredients
                               .split('\\n')
                               .filter((l) => l.trim())
                               .map(
                                 (l) =>
-                                  parseAndScaleLine(l, factor, rec.dietMode, rec.convertToGrams)
-                                    .displayText
+                                  parseAndScaleLine(
+                                    l,
+                                    factor,
+                                    rec.dietMode,
+                                    rec.convertToGrams,
+                                    measureSystem
+                                  ).displayText
                               );
                             const steps = rec.rawSteps
                               .split('\\n')
@@ -1121,7 +1470,9 @@ export default function RecipeBookVault({
                                 key={rec.id}
                                 className={
                                   'p-4 rounded-xl border space-y-2 ' +
-                                  (darkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-stone-200')
+                                  (darkMode
+                                    ? 'bg-slate-900 border-slate-800'
+                                    : 'bg-white border-stone-200')
                                 }
                               >
                                 <div className="flex items-center justify-between gap-2">
@@ -1129,7 +1480,9 @@ export default function RecipeBookVault({
                                     {rec.favorite ? '⭐ ' : ''}
                                     {rec.title}
                                   </h5>
-                                  <span className={mutedClass + ' text-xs'}>{rec.targetServings} מנות</span>
+                                  <span className={mutedClass + ' text-xs'}>
+                                    {rec.targetServings} מנות
+                                  </span>
                                 </div>
 
                                 {ings.length > 0 && (
@@ -1333,6 +1686,7 @@ import {
   getAirFryerHint,
   DietMode,
   TempUnit,
+  MeasureSystem,
 } from '@/lib/recipeEngine';
 import {
   SavedRecipeItem,
@@ -1470,6 +1824,7 @@ export default function SmartRecipeScalerPage() {
   const [targetServings, setTargetServings] = useState<number>(6);
   const [dietMode, setDietMode] = useState<DietMode>('none');
   const [convertToGrams, setConvertToGrams] = useState<boolean>(false);
+  const [measureSystem, setMeasureSystem] = useState<MeasureSystem>('metric');
   const [tempUnit, setTempUnit] = useState<TempUnit>('C');
   const [showAirFryerHints, setShowAirFryerHints] = useState<boolean>(true);
   const [darkMode, setDarkMode] = useState<boolean>(false);
@@ -1527,6 +1882,10 @@ export default function SmartRecipeScalerPage() {
       createdAt: new Date().toISOString(),
     };
     setSavedRecipes((prev) => [newItem, ...prev]);
+  };
+
+  const handleUpdateRecipe = (updated: SavedRecipeItem) => {
+    setSavedRecipes((prev) => prev.map((r) => (r.id === updated.id ? updated : r)));
   };
 
   const handleLoadRecipeToScaler = (item: SavedRecipeItem) => {
@@ -1774,8 +2133,10 @@ export default function SmartRecipeScalerPage() {
     return rawIngredients
       .split('\\n')
       .filter((line) => line.trim() !== '')
-      .map((line) => parseAndScaleLine(line, scaleFactor, dietMode, convertToGrams));
-  }, [rawIngredients, scaleFactor, dietMode, convertToGrams]);
+      .map((line) =>
+        parseAndScaleLine(line, scaleFactor, dietMode, convertToGrams, measureSystem)
+      );
+  }, [rawIngredients, scaleFactor, dietMode, convertToGrams, measureSystem]);
 
   const stepsWithTimers = useMemo(() => {
     return rawSteps
@@ -1828,7 +2189,9 @@ export default function SmartRecipeScalerPage() {
         setImportStatus('שגיאה: ' + (data.error || 'לא הצלחנו לחלץ את המתכון'));
       } else {
         const methodText =
-          data.sourceMethod === 'json-ld' ? 'חילוץ מובנה (Schema Recipe)' : 'חילוץ דטרמיניסטי מ-HTML';
+          data.sourceMethod === 'json-ld'
+            ? 'חילוץ מובנה (Schema Recipe)'
+            : 'חילוץ דטרמיניסטי מ-HTML';
         applyExtractedData(data.ingredients || [], data.steps || [], methodText);
       }
     } catch {
@@ -1893,6 +2256,27 @@ export default function SmartRecipeScalerPage() {
     });
   };
 
+  const addOneMinuteToTimer = (id: string) => {
+    delete finishedSoundPlayedRef.current[id];
+    setTimers((prev) => {
+      const existing = prev[id];
+      if (!existing) return prev;
+      const nextRemaining = existing.remaining + 60;
+      const nextTotal = Math.max(existing.total, nextRemaining);
+      return {
+        ...prev,
+        [id]: {
+          ...existing,
+          remaining: nextRemaining,
+          total: nextTotal,
+          running: true,
+          finished: false,
+          muted: false,
+        },
+      };
+    });
+  };
+
   const muteFinishedTimer = (id: string) => {
     setTimers((prev) => {
       const existing = prev[id];
@@ -1943,9 +2327,7 @@ export default function SmartRecipeScalerPage() {
 
   const buildShareMessage = () => {
     const ingLines = parsedIngredients.map((item) => '• ' + item.displayText).join('\\n');
-    const stepLines = stepsWithTimers
-      .map((s) => s.stepNumber + '. ' + s.displayText)
-      .join('\\n');
+    const stepLines = stepsWithTimers.map((s) => s.stepNumber + '. ' + s.displayText).join('\\n');
     return (
       '🍽️ *מתכון מותאם (' +
       targetServings +
@@ -2044,7 +2426,7 @@ export default function SmartRecipeScalerPage() {
           </div>
         </header>
 
-        {/* סרגל טיימרים פעילים תמיד נגיש */}
+        {/* סרגל טיימרים פעילים */}
         {activeTimerList.length > 0 && (
           <section className="bg-stone-900 text-white p-5 rounded-2xl shadow-md space-y-3 border border-stone-800">
             <div className="flex items-center justify-between">
@@ -2105,6 +2487,15 @@ export default function SmartRecipeScalerPage() {
                       {t.finished ? 'הזמן נגמר!' : formatSecondsClock(t.remaining)}
                     </div>
                     <div className="flex flex-wrap gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => addOneMinuteToTimer(t.id)}
+                        className="px-2.5 py-1.5 rounded-lg bg-stone-700 hover:bg-stone-600 text-white font-mono font-bold text-xs cursor-pointer"
+                        title="הוסף דקה"
+                      >
+                        +1:00
+                      </button>
+
                       {t.finished ? (
                         <>
                           {!t.muted && (
@@ -2177,10 +2568,12 @@ export default function SmartRecipeScalerPage() {
           <RecipeBookVault
             savedRecipes={savedRecipes}
             onSaveCurrentRecipe={handleSaveCurrentRecipe}
+            onUpdateRecipe={handleUpdateRecipe}
             onLoadRecipeToScaler={handleLoadRecipeToScaler}
             onToggleFavorite={handleToggleFavorite}
             onDeleteRecipe={handleDeleteRecipe}
             onUpdateRecipeCategory={handleUpdateRecipeCategory}
+            measureSystem={measureSystem}
             darkMode={darkMode}
           />
         ) : (
@@ -2219,7 +2612,9 @@ export default function SmartRecipeScalerPage() {
                       min={0}
                       max={24}
                       value={customHours}
-                      onChange={(e) => setCustomHours(Math.max(0, Math.min(24, Number(e.target.value))))}
+                      onChange={(e) =>
+                        setCustomHours(Math.max(0, Math.min(24, Number(e.target.value))))
+                      }
                       className={'w-full px-2 py-2 border rounded-xl text-center font-mono font-bold ' + inputClass}
                     />
                   </div>
@@ -2232,7 +2627,9 @@ export default function SmartRecipeScalerPage() {
                       min={0}
                       max={59}
                       value={customMinutes}
-                      onChange={(e) => setCustomMinutes(Math.max(0, Math.min(59, Number(e.target.value))))}
+                      onChange={(e) =>
+                        setCustomMinutes(Math.max(0, Math.min(59, Number(e.target.value))))
+                      }
                       className={'w-full px-2 py-2 border rounded-xl text-center font-mono font-bold ' + inputClass}
                     />
                   </div>
@@ -2245,7 +2642,9 @@ export default function SmartRecipeScalerPage() {
                       min={0}
                       max={59}
                       value={customSeconds}
-                      onChange={(e) => setCustomSeconds(Math.max(0, Math.min(59, Number(e.target.value))))}
+                      onChange={(e) =>
+                        setCustomSeconds(Math.max(0, Math.min(59, Number(e.target.value))))
+                      }
                       className={'w-full px-2 py-2 border rounded-xl text-center font-mono font-bold ' + inputClass}
                     />
                   </div>
@@ -2280,7 +2679,10 @@ export default function SmartRecipeScalerPage() {
                     value={maxAllowedReminderMinutes === 0 ? 0 : reminderMinutesInput}
                     onChange={(e) => {
                       const val = Math.floor(Number(e.target.value));
-                      const clamped = Math.max(0, Math.min(maxAllowedReminderMinutes, isNaN(val) ? 0 : val));
+                      const clamped = Math.max(
+                        0,
+                        Math.min(maxAllowedReminderMinutes, isNaN(val) ? 0 : val)
+                      );
                       setReminderMinutesInput(clamped);
                     }}
                     className={
@@ -2457,25 +2859,53 @@ export default function SmartRecipeScalerPage() {
 
               <div className="space-y-2">
                 <label className={mutedTextClass + ' block text-xs font-semibold uppercase'}>
-                  יחידות מידה
+                  שיטת מדידה וגרמים
                 </label>
-                <div className="pt-1">
+                <div className="space-y-2 pt-1">
+                  <div className="grid grid-cols-2 gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => setMeasureSystem('metric')}
+                      className={
+                        'py-1.5 px-2 rounded-lg text-xs font-bold border cursor-pointer ' +
+                        (measureSystem === 'metric'
+                          ? 'bg-amber-500 text-stone-950 border-amber-500'
+                          : darkMode
+                          ? 'bg-slate-800 text-slate-300 border-slate-700'
+                          : 'bg-stone-50 text-stone-700 border-stone-200')
+                      }
+                    >
+                      מטרי
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setMeasureSystem('us')}
+                      className={
+                        'py-1.5 px-2 rounded-lg text-xs font-bold border cursor-pointer ' +
+                        (measureSystem === 'us'
+                          ? 'bg-amber-500 text-stone-950 border-amber-500'
+                          : darkMode
+                          ? 'bg-slate-800 text-slate-300 border-slate-700'
+                          : 'bg-stone-50 text-stone-700 border-stone-200')
+                      }
+                    >
+                      US (oz/cup)
+                    </button>
+                  </div>
                   <button
                     type="button"
                     onClick={() => setConvertToGrams(!convertToGrams)}
                     className={
-                      'w-full py-3 px-3.5 rounded-xl text-xs font-medium border transition-all flex items-center justify-between cursor-pointer ' +
+                      'w-full py-1.5 px-2.5 rounded-lg text-xs font-medium border flex items-center justify-between cursor-pointer ' +
                       (convertToGrams
-                        ? 'bg-amber-500 text-stone-950 border-amber-500 font-bold shadow-sm'
+                        ? 'bg-amber-500 text-stone-950 border-amber-500 font-bold'
                         : darkMode
                         ? 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700'
                         : 'bg-stone-50 text-stone-700 border-stone-200 hover:bg-stone-100')
                     }
                   >
-                    <span>המר כוסות וכפות לגרמים</span>
-                    <span className="text-[11px] font-bold px-2 py-0.5 rounded bg-black/15">
-                      {convertToGrams ? 'פעיל' : 'כבוי'}
-                    </span>
+                    <span>המר לגרמים</span>
+                    <span className="text-[11px] font-bold">{convertToGrams ? 'פעיל' : 'כבוי'}</span>
                   </button>
                 </div>
               </div>
@@ -2789,4 +3219,4 @@ fs.writeFileSync(path.join(process.cwd(), 'components', 'RecipeBookVault.tsx'), 
 fs.writeFileSync(path.join(process.cwd(), 'app', 'api', 'extract-recipe', 'route.ts'), apiRouteCode, 'utf8');
 fs.writeFileSync(path.join(process.cwd(), 'app', 'page.tsx'), pageCode, 'utf8');
 
-console.log('עודכן בהצלחה: קובץ חדש components/RecipeBookVault.tsx + lib/recipeBook.ts לספר מתכונים ממוין.');
+console.log('עודכן בהצלחה: כריכה ותוכן עניינים לספר, עריכה ישירה, מידות מטרי/US וכפתור +1:00 לטיימר.');

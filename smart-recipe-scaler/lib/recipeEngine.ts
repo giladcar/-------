@@ -1,5 +1,6 @@
 export type DietMode = 'none' | 'vegan' | 'gluten-free' | 'dairy-free';
 export type TempUnit = 'C' | 'F';
+export type MeasureSystem = 'metric' | 'us';
 
 export interface ParsedIngredient {
   originalLine: string;
@@ -199,11 +200,88 @@ export function formatCleanNumber(num: number): string {
   return Number.isInteger(num) ? num.toString() : num.toFixed(1).replace(/\.0$/, '');
 }
 
+function formatUsMeasurement(
+  scaledAmount: number,
+  currentUnit: string | null,
+  gramsEquivalent: number | null,
+  ingredientName: string
+): { text: string; extraHint: string } {
+  if (!currentUnit) {
+    return { text: formatCleanNumber(scaledAmount) + ' ' + ingredientName, extraHint: '' };
+  }
+
+  const u = currentUnit.toLowerCase();
+
+  if (u === 'כוס' || u === 'כוסות' || u === 'cup' || u === 'cups') {
+    const unitWord = Math.abs(scaledAmount - 1) < 0.05 ? 'cup' : 'cups';
+    const gHint = gramsEquivalent !== null ? ' (~' + gramsEquivalent + 'g)' : '';
+    return {
+      text: formatCleanNumber(scaledAmount) + ' ' + unitWord + ' ' + ingredientName + gHint,
+      extraHint: '',
+    };
+  }
+
+  if (u === 'כף' || u === 'כפות' || u === 'tbsp') {
+    const mlVal = scaledAmount * 15;
+    const ozVal = mlVal / 29.5735;
+    return {
+      text: formatCleanNumber(scaledAmount) + ' tbsp ' + ingredientName,
+      extraHint: ' (' + Math.round(mlVal) + 'ml / ' + ozVal.toFixed(1) + 'oz)',
+    };
+  }
+
+  if (u === 'כפית' || u === 'כפיות' || u === 'tsp') {
+    const mlVal = scaledAmount * 5;
+    return {
+      text: formatCleanNumber(scaledAmount) + ' tsp ' + ingredientName,
+      extraHint: ' (' + Math.round(mlVal) + 'ml)',
+    };
+  }
+
+  if (u === 'מ"ל' || u === 'מל' || u === 'ml') {
+    const ozVal = scaledAmount / 29.5735;
+    return {
+      text: ozVal.toFixed(1) + ' oz ' + ingredientName,
+      extraHint: ' (' + Math.round(scaledAmount) + 'ml)',
+    };
+  }
+
+  if (u === 'ליטר' || u === 'liter') {
+    const ozVal = (scaledAmount * 1000) / 29.5735;
+    return {
+      text: ozVal.toFixed(1) + ' fl oz ' + ingredientName,
+      extraHint: ' (' + Math.round(scaledAmount * 1000) + 'ml)',
+    };
+  }
+
+  if (u === 'גרם' || u === "ג'" || u === 'g' || u === 'gram' || u === 'grams') {
+    const ozVal = scaledAmount / 28.3495;
+    return {
+      text: ozVal.toFixed(1) + ' oz ' + ingredientName,
+      extraHint: ' (' + Math.round(scaledAmount) + 'g)',
+    };
+  }
+
+  if (u === 'ק"ג' || u === 'קילו' || u === 'kg') {
+    const ozVal = (scaledAmount * 1000) / 28.3495;
+    return {
+      text: ozVal.toFixed(1) + ' oz ' + ingredientName,
+      extraHint: ' (' + Math.round(scaledAmount * 1000) + 'g)',
+    };
+  }
+
+  return {
+    text: formatCleanNumber(scaledAmount) + ' ' + currentUnit + ' ' + ingredientName,
+    extraHint: '',
+  };
+}
+
 export function parseAndScaleLine(
   line: string,
   scaleFactor: number,
   dietMode: DietMode,
-  convertToGrams: boolean
+  convertToGrams: boolean,
+  measureSystem: MeasureSystem = 'metric'
 ): ParsedIngredient {
   const trimmed = line.trim().replace(/^[-*•]\s*/, '');
   if (!trimmed) {
@@ -308,7 +386,10 @@ export function parseAndScaleLine(
 
   let displayText = '';
   if (scaledAmount !== null) {
-    if (convertToGrams && gramsEquivalent !== null && currentUnit && VOLUME_TO_ML[currentUnit]) {
+    if (measureSystem === 'us') {
+      const usRes = formatUsMeasurement(scaledAmount, currentUnit, gramsEquivalent, ingredientName);
+      displayText = usRes.text + usRes.extraHint;
+    } else if (convertToGrams && gramsEquivalent !== null && currentUnit && VOLUME_TO_ML[currentUnit]) {
       displayText = gramsEquivalent + ' גרם ' + ingredientName;
     } else {
       const formattedNum = formatCleanNumber(scaledAmount);
