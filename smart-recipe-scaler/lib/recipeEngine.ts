@@ -11,6 +11,18 @@ export interface ParsedIngredient {
   displayText: string;
 }
 
+export interface DetectedTimer {
+  id: string;
+  seconds: number;
+  label: string;
+}
+
+export interface ExtractedRecipeResult {
+  ingredients: string[];
+  steps: string[];
+  sourceMethod: 'json-ld' | 'text-parser' | 'html-fallback';
+}
+
 const VOLUME_TO_ML: Record<string, number> = {
   'כוס': 240,
   'כוסות': 240,
@@ -314,4 +326,149 @@ export function parseAndScaleLine(
     substitutionNote,
     displayText,
   };
+}
+
+export function extractTimersFromStep(stepText: string, stepIndex: number): DetectedTimer[] {
+  const results: DetectedTimer[] = [];
+  const timeRegex =
+    /(?:כ-|בערך\s+)?(\d+(?:[.,]\d+)?(?:\s*-\s*\d+(?:[.,]\d+)?)?|[½¼¾])\s*(שעות|שעה|דקות|דקה|שניות|שנייה|hours?|hour|minutes?|mins?|min|seconds?|secs?|sec)(?=\s|[.,!?;:]|$)/gi;
+
+  let match: RegExpExecArray | null;
+  let idx = 0;
+
+  while ((match = timeRegex.exec(stepText)) !== null) {
+    const rawNumPart = match[1].trim();
+    const rawUnit = match[2].toLowerCase();
+
+    const rangeParts = rawNumPart.split('-').map((p) => p.trim());
+    const chosenNumStr = rangeParts[rangeParts.length - 1];
+    const parsedVal = parseFractionNumber(chosenNumStr);
+
+    if (!parsedVal || parsedVal <= 0) continue;
+
+    let multiplier = 60;
+    let unitLabel = 'דקות';
+
+    if (rawUnit.startsWith('שע') || rawUnit.startsWith('hour')) {
+      multiplier = 3600;
+      unitLabel = parsedVal === 1 ? 'שעה' : 'שעות';
+    } else if (rawUnit.startsWith('שנ') || rawUnit.startsWith('sec')) {
+      multiplier = 1;
+      unitLabel = parsedVal === 1 ? 'שנייה' : 'שניות';
+    } else {
+      multiplier = 60;
+      unitLabel = parsedVal === 1 ? 'דקה' : 'דקות';
+    }
+
+    const totalSeconds = Math.max(1, Math.round(parsedVal * multiplier));
+    const displayVal = formatCleanNumber(parsedVal);
+
+    results.push({
+      id: 'step-' + stepIndex + '-timer-' + idx,
+      seconds: totalSeconds,
+      label: displayVal + ' ' + unitLabel,
+    });
+    idx += 1;
+  }
+
+  return results;
+}
+
+export function formatSecondsClock(totalSec: number): string {
+  const safe = Math.max(0, Math.floor(totalSec));
+  const hrs = Math.floor(safe / 3600);
+  const mins = Math.floor((safe % 3600) / 60);
+  const secs = safe % 60;
+
+  const pad = (n: number) => n.toString().padStart(2, '0');
+  if (hrs > 0) {
+    return hrs + ':' + pad(mins) + ':' + pad(secs);
+  }
+  return pad(mins) + ':' + pad(secs);
+}
+
+export function extractRecipeFromText(rawText: string): { ingredients: string[]; steps: string[] } {
+  const lines = rawText
+    .split(/\r?\n/)
+    .map((l) => l.replace(/^[•*\-–—]+\s*/, '').replace(/^\d+[.)]\s*/, '').trim())
+    .filter((l) => l.length > 1);
+
+  const ingredientHeaders = /^(מצרכים|מרכיבים|רכיבים|המצרכים|המרכיבים|ingredients?)\s*:?$/i;
+  const stepHeaders = /^(אופן ההכנה|הכנה|שלבי הכנה|הוראות הכנה|הוראות|instructions?|directions?|steps?|method)\s*:?$/i;
+  const fluffPatterns =
+    /(השאירו תגובה|שתפו בתגובות|בתיאבון|שמור מתכון|הדפס מתכון|subscribe|cookie|privacy|all rights reserved)/i;
+
+  let section: 'unknown' | 'ingredients' | 'steps' = 'unknown';
+  const ingredients: string[] = [];
+  const steps: string[] = [];
+
+  const unitWords = [
+    ...Object.keys(VOLUME_TO_ML),
+    ...Object.keys(WEIGHT_TO_GRAMS),
+    'יחידות',
+    "יח'",
+    'חבילה',
+    'חבילות',
+    'שיני',
+    'עלים',
+    'קופסה',
+    'קופסאות',
+    'צרור',
+    'קורט',
+    'pinch',
+    'cloves?',
+    'cans?',
+    'packages?',
+  ];
+  const startsWithAmountOrUnit = new RegExp(
+    '^(\d+|[½⅓⅔¼¾⅛]|' + unitWords.join('|') + ')\b',
+    'i'
+  );
+  const actionVerbRegex =
+    /(מחממים|מערבבים|מוסיפים|אופים|מבשלים|מטגנים|מקציפים|חותכים|קוצצים|מקררים|מכניסים|יוצקים|לשים|מרדדים|מתבלים|מגישים|preheat|mix|stir|add|bake|boil|fry|whisk|chop|slice|cool|pour|knead|simmer)/i;
+
+  for (const line of lines) {
+    if (fluffPatterns.test(line)) continue;
+
+    if (ingredientHeaders.test(line)) {
+      section = 'ingredients';
+      continue;
+    }
+    if (stepHeaders.test(line)) {
+      section = 'steps';
+      continue;
+    }
+
+    if (section === 'ingredients') {
+      if (line.length > 110 && actionVerbRegex.test(line)) {
+        section = 'steps';
+        steps.push(line);
+      } else {
+        ingredients.push(line);
+      }
+      continue;
+    }
+
+    if (section === 'steps') {
+      if (line.length <= 55 && startsWithAmountOrUnit.test(line) && !actionVerbRegex.test(line)) {
+        ingredients.push(line);
+      } else {
+        steps.push(line);
+      }
+      continue;
+    }
+
+    const looksLikeIngredient =
+      line.length <= 75 &&
+      startsWithAmountOrUnit.test(line) &&
+      (!actionVerbRegex.test(line) || line.split(' ').length <= 6);
+
+    if (looksLikeIngredient) {
+      ingredients.push(line);
+    } else if (line.length >= 25 && (actionVerbRegex.test(line) || /[.!]$/.test(line))) {
+      steps.push(line);
+    }
+  }
+
+  return { ingredients, steps };
 }
