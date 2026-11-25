@@ -759,7 +759,14 @@ export default function SmartRecipeScalerPage() {
               </h2>
               <button
                 type="button"
-                onClick={() => setTimers({})}
+                onClick={() => {
+                  if (
+                    typeof window === 'undefined' ||
+                    window.confirm('האם אתה בטוח שאתה רוצה למחוק את כל הטיימרים הפעילים?')
+                  ) {
+                    setTimers({});
+                  }
+                }}
                 className="text-xs text-stone-400 hover:text-white cursor-pointer"
               >
                 נקה הכל
@@ -798,7 +805,14 @@ export default function SmartRecipeScalerPage() {
                     </div>
                     <button
                       type="button"
-                      onClick={() => removeTimer(t.id)}
+                      onClick={() => {
+                      if (
+                        typeof window === 'undefined' ||
+                        window.confirm('האם אתה בטוח שאתה רוצה למחוק את "' + t.sourceLabel + '"?')
+                      ) {
+                        removeTimer(t.id);
+                      }
+                    }}
                       className="text-xs text-stone-400 hover:text-red-400 px-1 cursor-pointer"
                       title="הסר טיימר"
                     >
@@ -833,7 +847,14 @@ export default function SmartRecipeScalerPage() {
                           )}
                           <button
                             type="button"
-                            onClick={() => removeTimer(t.id)}
+                            onClick={() => {
+                      if (
+                        typeof window === 'undefined' ||
+                        window.confirm('האם אתה בטוח שאתה רוצה למחוק את "' + t.sourceLabel + '"?')
+                      ) {
+                        removeTimer(t.id);
+                      }
+                    }}
                             className="px-3 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-stone-950 font-bold text-xs cursor-pointer"
                           >
                             אוקיי - סגור

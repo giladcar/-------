@@ -568,7 +568,14 @@ export default function RecipeBookVault({
                           </button>
                           <button
                             type="button"
-                            onClick={() => onDeleteRecipe(rec.id)}
+                            onClick={() => {
+                            if (
+                              typeof window === 'undefined' ||
+                              window.confirm('האם אתה בטוח שאתה רוצה למחוק את "' + rec.title + '"?')
+                            ) {
+                              onDeleteRecipe(rec.id);
+                            }
+                          }}
                             className="px-2.5 py-1.5 rounded-lg bg-red-600/15 hover:bg-red-600 text-red-500 hover:text-white font-semibold text-xs transition-colors cursor-pointer"
                           >
                             מחק
