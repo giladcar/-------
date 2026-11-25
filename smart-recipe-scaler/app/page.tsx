@@ -54,31 +54,69 @@ interface ActiveTimerState {
   reminderTriggered: boolean;
 }
 
-function playAlarmBeep(kind: 'finish' | 'reminder' = 'finish') {
-  if (typeof window === 'undefined') return;
+// מחזיר את משך סבב הצליל במילישניות כדי שנוכל לחזור בדיוק שנייה אחרי שהוא מסתיים
+function playAlarmBeep(kind: 'finish' | 'reminder' = 'finish'): number {
+  if (typeof window === 'undefined') return 1000;
   const AudioCtx =
     window.AudioContext ||
     (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-  if (!AudioCtx) return;
 
-  try {
-    const ctx = new AudioCtx();
-    const notes = kind === 'finish' ? [880, 1174.66, 880, 1318.5] : [659.25, 880];
-    notes.forEach((freq, i) => {
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.type = 'sine';
-      osc.frequency.value = freq;
-      gain.gain.setValueAtTime(0.2, ctx.currentTime + i * 0.22);
-      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + i * 0.22 + 0.2);
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-      osc.start(ctx.currentTime + i * 0.22);
-      osc.stop(ctx.currentTime + i * 0.22 + 0.21);
-    });
-  } catch {
-    // חסימת אודיו מצד הדפדפן
+  if (kind === 'reminder') {
+    // צליל ההתראה הוא הצליל שהיה קודם צליל הסיום
+    const notes = [880, 1174.66, 880, 1318.5];
+    const stepDelay = 0.22;
+    const duration = 0.2;
+    if (AudioCtx) {
+      try {
+        const ctx = new AudioCtx();
+        notes.forEach((freq, i) => {
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.type = 'sine';
+          osc.frequency.value = freq;
+          gain.gain.setValueAtTime(0.22, ctx.currentTime + i * stepDelay);
+          gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + i * stepDelay + duration);
+          osc.connect(gain);
+          gain.connect(ctx.destination);
+          osc.start(ctx.currentTime + i * stepDelay);
+          osc.stop(ctx.currentTime + i * stepDelay + duration + 0.01);
+        });
+      } catch {
+        // חסימת אודיו מצד הדפדפן
+      }
+    }
+    return Math.round((notes.length - 1) * stepDelay * 1000 + duration * 1000);
   }
+
+  // צלצול סופי מתמשך שנחזור עליו שנייה אחרי שסבב הצלצול מסתיים
+  const pattern = [
+    { freq: 1046.5, start: 0, dur: 0.28 },
+    { freq: 1318.5, start: 0.32, dur: 0.28 },
+    { freq: 1046.5, start: 0.66, dur: 0.28 },
+    { freq: 1567.98, start: 1.0, dur: 0.55 },
+  ];
+
+  if (AudioCtx) {
+    try {
+      const ctx = new AudioCtx();
+      pattern.forEach((p) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'triangle';
+        osc.frequency.value = p.freq;
+        gain.gain.setValueAtTime(0.28, ctx.currentTime + p.start);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + p.start + p.dur);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(ctx.currentTime + p.start);
+        osc.stop(ctx.currentTime + p.start + p.dur + 0.02);
+      });
+    } catch {
+      // חסימת אודיו מצד הדפדפן
+    }
+  }
+
+  return 1600;
 }
 
 export default function SmartRecipeScalerPage() {
@@ -94,6 +132,7 @@ export default function SmartRecipeScalerPage() {
   const [timers, setTimers] = useState<Record<string, ActiveTimerState>>({});
   const finishedSoundPlayedRef = useRef<Record<string, boolean>>({});
   const reminderSoundPlayedRef = useRef<Record<string, boolean>>({});
+  const finishSoundDurationRef = useRef<number>(1600);
 
   // מצב טיימר מותאם אישית (שעות, דקות, שניות + תזכורת מוקדמת)
   const [customTitle, setCustomTitle] = useState<string>('');
@@ -165,7 +204,7 @@ export default function SmartRecipeScalerPage() {
             if (nextRem === 0) {
               if (!finishedSoundPlayedRef.current[id]) {
                 finishedSoundPlayedRef.current[id] = true;
-                playAlarmBeep('finish');
+                finishSoundDurationRef.current = playAlarmBeep('finish');
               }
               next[id] = {
                 ...t,
@@ -193,7 +232,36 @@ export default function SmartRecipeScalerPage() {
     return () => clearInterval(interval);
   }, []);
 
-  // חישוב זמן כולל בשניות ומקסימום דקות לתזכורת (עד 60 דקות ולא יותר מאורך הטיימר)
+  const hasFinishedTimers = useMemo(
+    () => Object.values(timers).some((t) => t.finished),
+    [timers]
+  );
+
+  // מפעיל את הצלצול הסופי שוב שנייה אחת אחרי שהסבב הקודם הסתיים, עד שלוחצים על אוקיי - סגור
+  useEffect(() => {
+    if (!hasFinishedTimers) return;
+
+    let cancelled = false;
+    let nextTimeout: ReturnType<typeof setTimeout> | null = null;
+
+    const scheduleNextRing = () => {
+      if (cancelled) return;
+      const waitBeforeNextRingMs = finishSoundDurationRef.current + 1000;
+      nextTimeout = setTimeout(() => {
+        if (cancelled) return;
+        finishSoundDurationRef.current = playAlarmBeep('finish');
+        scheduleNextRing();
+      }, waitBeforeNextRingMs);
+    };
+
+    scheduleNextRing();
+
+    return () => {
+      cancelled = true;
+      if (nextTimeout) clearTimeout(nextTimeout);
+    };
+  }, [hasFinishedTimers]);
+
   const customTotalSeconds = useMemo(() => {
     const h = Math.max(0, Math.floor(customHours || 0));
     const m = Math.max(0, Math.floor(customMinutes || 0));
@@ -203,12 +271,10 @@ export default function SmartRecipeScalerPage() {
 
   const maxAllowedReminderMinutes = useMemo(() => {
     if (customTotalSeconds <= 60) return 0;
-    // חייב להיות פחות מהזמן הכולל של הטיימר ולא יותר מ-60 דקות
     const strictlyLessThanTotal = Math.floor((customTotalSeconds - 1) / 60);
     return Math.min(60, Math.max(0, strictlyLessThanTotal));
   }, [customTotalSeconds]);
 
-  // עדכון אוטומטי של שדה התזכורת אם המשתמש קיצר את זמן הטיימר מתחת לערך התזכורת
   useEffect(() => {
     if (maxAllowedReminderMinutes === 0) {
       setReminderMinutesInput(0);
@@ -241,9 +307,9 @@ export default function SmartRecipeScalerPage() {
 
     const id = 'custom-timer-' + Date.now();
     const labelParts: string[] = [];
-    if (customHours > 0) labelParts.push(customHours + ' שע');
-    if (customMinutes > 0) labelParts.push(customMinutes + ' דק');
-    if (customSeconds > 0) labelParts.push(customSeconds + ' שנ');
+    if (customHours > 0) labelParts.push(customHours + " שע'");
+    if (customMinutes > 0) labelParts.push(customMinutes + " דק'");
+    if (customSeconds > 0) labelParts.push(customSeconds + " שנ'");
 
     const titleText = customTitle.trim() ? customTitle.trim() : 'טיימר מותאם אישית';
 
@@ -621,18 +687,37 @@ export default function SmartRecipeScalerPage() {
                       {t.finished ? 'הזמן נגמר!' : formatSecondsClock(t.remaining)}
                     </div>
                     <div className="flex gap-1.5">
-                      <button
-                        onClick={() => startOrToggleTimer(t.id, t.total, t.label, t.sourceLabel)}
-                        className="px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-stone-950 font-bold text-xs cursor-pointer"
-                      >
-                        {t.finished ? 'הפעל שוב' : t.running ? 'השהה' : 'המשך'}
-                      </button>
-                      <button
-                        onClick={() => resetTimer(t.id)}
-                        className="px-2.5 py-1.5 rounded-lg bg-stone-700 hover:bg-stone-600 text-white text-xs cursor-pointer"
-                      >
-                        איפוס
-                      </button>
+                      {t.finished ? (
+                        <>
+                          <button
+                            onClick={() => removeTimer(t.id)}
+                            className="px-3 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-stone-950 font-bold text-xs cursor-pointer"
+                          >
+                            אוקיי - סגור
+                          </button>
+                          <button
+                            onClick={() => startOrToggleTimer(t.id, t.total, t.label, t.sourceLabel)}
+                            className="px-2.5 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-stone-950 font-bold text-xs cursor-pointer"
+                          >
+                            הפעל שוב
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          <button
+                            onClick={() => startOrToggleTimer(t.id, t.total, t.label, t.sourceLabel)}
+                            className="px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-stone-950 font-bold text-xs cursor-pointer"
+                          >
+                            {t.running ? 'השהה' : 'המשך'}
+                          </button>
+                          <button
+                            onClick={() => resetTimer(t.id)}
+                            className="px-2.5 py-1.5 rounded-lg bg-stone-700 hover:bg-stone-600 text-white text-xs cursor-pointer"
+                          >
+                            איפוס
+                          </button>
+                        </>
+                      )}
                     </div>
                   </div>
                 </div>
