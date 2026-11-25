@@ -241,9 +241,9 @@ export default function SmartRecipeScalerPage() {
 
     const id = 'custom-timer-' + Date.now();
     const labelParts: string[] = [];
-    if (customHours > 0) labelParts.push(customHours + ' שע'');
-    if (customMinutes > 0) labelParts.push(customMinutes + ' דק'');
-    if (customSeconds > 0) labelParts.push(customSeconds + ' שנ'');
+    if (customHours > 0) labelParts.push(customHours + ' שע');
+    if (customMinutes > 0) labelParts.push(customMinutes + ' דק');
+    if (customSeconds > 0) labelParts.push(customSeconds + ' שנ');
 
     const titleText = customTitle.trim() ? customTitle.trim() : 'טיימר מותאם אישית';
 
