@@ -23,6 +23,7 @@ export default function RootLayout({
 `;
 
 const engineCode = `export type DietMode = 'none' | 'vegan' | 'gluten-free' | 'dairy-free';
+export type TempUnit = 'C' | 'F';
 
 export interface ParsedIngredient {
   originalLine: string;
@@ -39,6 +40,12 @@ export interface DetectedTimer {
   id: string;
   seconds: number;
   label: string;
+}
+
+export interface AirFryerHint {
+  tempText: string;
+  timeText: string;
+  summary: string;
 }
 
 export interface ExtractedRecipeResult {
@@ -398,6 +405,66 @@ export function extractTimersFromStep(stepText: string, stepIndex: number): Dete
   return results;
 }
 
+export function formatStepTemperatures(stepText: string, unit: TempUnit): string {
+  // ממיר טמפרטורות בצלזיוס (כמו 180 מעלות או 180°C) ובפרנהייט (כמו 350°F) ליחידה הנבחרת
+  const cRegex = /(\d{2,3})(?:\s*(?:°\s*C|℃|מעלות(?:\s*צלזיוס)?))(?=[\s.,!?;:)]|$)/gi;
+  const fRegex = /(\d{2,3})\s*(?:°\s*F|℉)(?=[\s.,!?;:)]|$)/gi;
+
+  let result = stepText.replace(cRegex, (fullMatch, numStr) => {
+    const cVal = Number(numStr);
+    if (isNaN(cVal)) return fullMatch;
+    if (unit === 'C') {
+      return cVal + '°C';
+    }
+    const fVal = Math.round((cVal * 9) / 5 + 32);
+    return fVal + '°F';
+  });
+
+  result = result.replace(fRegex, (fullMatch, numStr) => {
+    const fVal = Number(numStr);
+    if (isNaN(fVal)) return fullMatch;
+    if (unit === 'F') {
+      return fVal + '°F';
+    }
+    const cVal = Math.round(((fVal - 32) * 5) / 9);
+    return cVal + '°C';
+  });
+
+  return result;
+}
+
+export function getAirFryerHint(stepText: string, detectedTimers: DetectedTimer[]): AirFryerHint | null {
+  const bakeOrRoastRegex = /(אופים|לאפות|אפייה|צולים|לצלות|צלייה|תנור|bake|roast|oven)/i;
+  if (!bakeOrRoastRegex.test(stepText)) return null;
+
+  let baseCelsius: number | null = null;
+  const cMatch = stepText.match(/(\d{2,3})(?:\s*(?:°\s*C|℃|מעלות(?:\s*צלזיוס)?))(?=[\s.,!?;:)]|$)/i);
+  const fMatch = stepText.match(/(\d{2,3})\s*(?:°\s*F|℉)(?=[\s.,!?;:)]|$)/i);
+
+  if (cMatch) {
+    baseCelsius = Number(cMatch[1]);
+  } else if (fMatch) {
+    baseCelsius = Math.round(((Number(fMatch[1]) - 32) * 5) / 9);
+  }
+
+  const airTempC = baseCelsius !== null ? Math.max(120, baseCelsius - 20) : 165;
+  const airTempF = Math.round((airTempC * 9) / 5 + 32);
+  const tempText = airTempC + '°C / ' + airTempF + '°F';
+
+  let timeText = 'קצר בכ-20% מזמן התנור';
+  if (detectedTimers.length > 0) {
+    const mainSec = detectedTimers[0].seconds;
+    const adjustedMin = Math.max(1, Math.round((mainSec * 0.8) / 60));
+    timeText = 'כ-' + adjustedMin + ' דק׳ (במקום ' + formatCleanNumber(mainSec / 60) + ' דק׳)';
+  }
+
+  return {
+    tempText,
+    timeText,
+    summary: 'אייר-פריי משוער: ' + tempText + ' • ' + timeText,
+  };
+}
+
 export function formatSecondsClock(totalSec: number): string {
   const safe = Math.max(0, Math.floor(totalSec));
   const hrs = Math.floor(safe / 3600);
@@ -656,7 +723,10 @@ import {
   extractTimersFromStep,
   extractRecipeFromText,
   formatSecondsClock,
+  formatStepTemperatures,
+  getAirFryerHint,
   DietMode,
+  TempUnit,
 } from '@/lib/recipeEngine';
 
 const SAMPLE_RECIPE = [
@@ -700,8 +770,20 @@ interface ActiveTimerState {
   total: number;
   running: boolean;
   finished: boolean;
+  muted: boolean;
   reminderSeconds: number | null;
   reminderTriggered: boolean;
+}
+
+function showBrowserNotification(title: string, body: string) {
+  if (typeof window === 'undefined' || !('Notification' in window)) return;
+  if (Notification.permission === 'granted') {
+    try {
+      new Notification(title, { body });
+    } catch {
+      // חסימת התראת מערכת על ידי הדפדפן
+    }
+  }
 }
 
 function playAlarmBeep(kind: 'finish' | 'reminder' = 'finish'): number {
@@ -773,6 +855,9 @@ export default function SmartRecipeScalerPage() {
   const [targetServings, setTargetServings] = useState<number>(6);
   const [dietMode, setDietMode] = useState<DietMode>('none');
   const [convertToGrams, setConvertToGrams] = useState<boolean>(false);
+  const [tempUnit, setTempUnit] = useState<TempUnit>('C');
+  const [showAirFryerHints, setShowAirFryerHints] = useState<boolean>(true);
+  const [darkMode, setDarkMode] = useState<boolean>(false);
   const [cookingMode, setCookingMode] = useState<boolean>(false);
   const [checkedItems, setCheckedItems] = useState<Record<string, boolean>>({});
   const [copied, setCopied] = useState<boolean>(false);
@@ -781,6 +866,11 @@ export default function SmartRecipeScalerPage() {
   const reminderSoundPlayedRef = useRef<Record<string, boolean>>({});
   const finishSoundDurationRef = useRef<number>(1600);
 
+  // תזכורת מוקדמת לטיימרים מהשלבים
+  const [stepReminderEnabled, setStepReminderEnabled] = useState<boolean>(true);
+  const [stepReminderMinutes, setStepReminderMinutes] = useState<number>(2);
+
+  // מצב טיימר מותאם אישית (שעות, דקות, שניות + תזכורת מוקדמת)
   const [customTitle, setCustomTitle] = useState<string>('');
   const [customHours, setCustomHours] = useState<number>(0);
   const [customMinutes, setCustomMinutes] = useState<number>(10);
@@ -789,6 +879,7 @@ export default function SmartRecipeScalerPage() {
   const [reminderMinutesInput, setReminderMinutesInput] = useState<number>(5);
   const [customTimerError, setCustomTimerError] = useState<string | null>(null);
 
+  // מצב חילוץ אוטומטי (קישור URL או טקסט ארוך)
   const [importerOpen, setImporterOpen] = useState<boolean>(true);
   const [urlInput, setUrlInput] = useState<string>('');
   const [longTextInput, setLongTextInput] = useState<string>(SAMPLE_LONG_TEXT);
@@ -798,6 +889,17 @@ export default function SmartRecipeScalerPage() {
   useEffect(() => {
     document.title = 'ממיר מתכונים חכם';
   }, []);
+
+  const ensureNotificationPermission = async () => {
+    if (typeof window === 'undefined' || !('Notification' in window)) return;
+    if (Notification.permission === 'default') {
+      try {
+        await Notification.requestPermission();
+      } catch {
+        // המשתמש לא אישר או שהדפדפן חסם
+      }
+    }
+  };
 
   useEffect(() => {
     let wakeLock: { release: () => Promise<void> } | null = null;
@@ -847,6 +949,11 @@ export default function SmartRecipeScalerPage() {
               if (!reminderSoundPlayedRef.current[id]) {
                 reminderSoundPlayedRef.current[id] = true;
                 playAlarmBeep('reminder');
+                const minsLeft = Math.round(t.reminderSeconds / 60);
+                showBrowserNotification(
+                  'תזכורת מוקדמת: ' + t.sourceLabel,
+                  'נשארו כ-' + minsLeft + ' דקות לטיימר (' + t.label + ')'
+                );
               }
             }
 
@@ -854,6 +961,10 @@ export default function SmartRecipeScalerPage() {
               if (!finishedSoundPlayedRef.current[id]) {
                 finishedSoundPlayedRef.current[id] = true;
                 finishSoundDurationRef.current = playAlarmBeep('finish');
+                showBrowserNotification(
+                  'הזמן נגמר: ' + t.sourceLabel,
+                  'הטיימר (' + t.label + ') הסתיים!'
+                );
               }
               next[id] = {
                 ...t,
@@ -881,13 +992,13 @@ export default function SmartRecipeScalerPage() {
     return () => clearInterval(interval);
   }, []);
 
-  const hasFinishedTimers = useMemo(
-    () => Object.values(timers).some((t) => t.finished),
+  const hasAudibleFinishedTimers = useMemo(
+    () => Object.values(timers).some((t) => t.finished && !t.muted),
     [timers]
   );
 
   useEffect(() => {
-    if (!hasFinishedTimers) return;
+    if (!hasAudibleFinishedTimers) return;
 
     let cancelled = false;
     let nextTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -908,7 +1019,7 @@ export default function SmartRecipeScalerPage() {
       cancelled = true;
       if (nextTimeout) clearTimeout(nextTimeout);
     };
-  }, [hasFinishedTimers]);
+  }, [hasAudibleFinishedTimers]);
 
   const customTotalSeconds = useMemo(() => {
     const h = Math.max(0, Math.floor(customHours || 0));
@@ -931,7 +1042,7 @@ export default function SmartRecipeScalerPage() {
     }
   }, [maxAllowedReminderMinutes, reminderMinutesInput]);
 
-  const handleStartCustomTimer = () => {
+  const handleStartCustomTimer = async () => {
     setCustomTimerError(null);
 
     if (customTotalSeconds <= 0) {
@@ -953,6 +1064,8 @@ export default function SmartRecipeScalerPage() {
       validReminderSec = remSec;
     }
 
+    await ensureNotificationPermission();
+
     const id = 'custom-timer-' + Date.now();
     const labelParts: string[] = [];
     if (customHours > 0) labelParts.push(customHours + " שע'");
@@ -971,10 +1084,19 @@ export default function SmartRecipeScalerPage() {
         total: customTotalSeconds,
         running: true,
         finished: false,
+        muted: false,
         reminderSeconds: validReminderSec,
         reminderTriggered: false,
       },
     }));
+  };
+
+  const getStepReminderSeconds = (totalSeconds: number): number | null => {
+    if (!stepReminderEnabled || stepReminderMinutes <= 0) return null;
+    const maxMin = Math.min(60, Math.max(0, Math.floor((totalSeconds - 1) / 60)));
+    if (maxMin <= 0) return null;
+    const chosenMin = Math.min(stepReminderMinutes, maxMin);
+    return chosenMin * 60;
   };
 
   const scaleFactor = useMemo(() => {
@@ -994,12 +1116,17 @@ export default function SmartRecipeScalerPage() {
       .split('\\n')
       .map((s) => s.trim())
       .filter(Boolean)
-      .map((text, idx) => ({
-        text,
-        stepNumber: idx + 1,
-        detectedTimers: extractTimersFromStep(text, idx),
-      }));
-  }, [rawSteps]);
+      .map((text, idx) => {
+        const detectedTimers = extractTimersFromStep(text, idx);
+        return {
+          rawText: text,
+          displayText: formatStepTemperatures(text, tempUnit),
+          stepNumber: idx + 1,
+          detectedTimers,
+          airFryerHint: getAirFryerHint(text, detectedTimers),
+        };
+      });
+  }, [rawSteps, tempUnit]);
 
   const applyExtractedData = (ingredients: string[], steps: string[], label: string) => {
     if (ingredients.length > 0) {
@@ -1045,9 +1172,17 @@ export default function SmartRecipeScalerPage() {
     }
   };
 
-  const startOrToggleTimer = (id: string, totalSeconds: number, label: string, sourceLabel: string) => {
+  const startOrToggleTimer = async (
+    id: string,
+    totalSeconds: number,
+    label: string,
+    sourceLabel: string,
+    reminderSeconds: number | null = null
+  ) => {
+    await ensureNotificationPermission();
     delete finishedSoundPlayedRef.current[id];
     delete reminderSoundPlayedRef.current[id];
+
     setTimers((prev) => {
       const existing = prev[id];
       if (!existing) {
@@ -1061,7 +1196,8 @@ export default function SmartRecipeScalerPage() {
             total: totalSeconds,
             running: true,
             finished: false,
-            reminderSeconds: null,
+            muted: false,
+            reminderSeconds,
             reminderTriggered: false,
           },
         };
@@ -1075,6 +1211,8 @@ export default function SmartRecipeScalerPage() {
             total: totalSeconds,
             running: true,
             finished: false,
+            muted: false,
+            reminderSeconds: reminderSeconds ?? existing.reminderSeconds,
             reminderTriggered: false,
           },
         };
@@ -1084,6 +1222,20 @@ export default function SmartRecipeScalerPage() {
         [id]: {
           ...existing,
           running: !existing.running,
+        },
+      };
+    });
+  };
+
+  const muteFinishedTimer = (id: string) => {
+    setTimers((prev) => {
+      const existing = prev[id];
+      if (!existing) return prev;
+      return {
+        ...prev,
+        [id]: {
+          ...existing,
+          muted: true,
         },
       };
     });
@@ -1102,6 +1254,7 @@ export default function SmartRecipeScalerPage() {
           remaining: existing.total,
           running: false,
           finished: false,
+          muted: false,
           reminderTriggered: false,
         },
       };
@@ -1122,6 +1275,21 @@ export default function SmartRecipeScalerPage() {
     setCheckedItems((prev) => ({ ...prev, [key]: !prev[key] }));
   };
 
+  const buildShareMessage = () => {
+    const ingLines = parsedIngredients.map((item) => '• ' + item.displayText).join('\\n');
+    const stepLines = stepsWithTimers
+      .map((s) => s.stepNumber + '. ' + s.displayText)
+      .join('\\n');
+    return (
+      '🍽️ *מתכון מותאם (' +
+      targetServings +
+      ' מנות)*\\n\\n' +
+      '*מצרכים:*\\n' +
+      ingLines +
+      (stepLines ? '\\n\\n*שלבי הכנה:*\\n' + stepLines : '')
+    );
+  };
+
   const handleCopyRecipe = () => {
     const text = parsedIngredients.map((item) => '• ' + item.displayText).join('\\n');
     navigator.clipboard.writeText(text);
@@ -1129,39 +1297,81 @@ export default function SmartRecipeScalerPage() {
     setTimeout(() => setCopied(false), 2000);
   };
 
+  const handleShareWhatsApp = () => {
+    const message = buildShareMessage();
+    const url = 'https://wa.me/?text=' + encodeURIComponent(message);
+    window.open(url, '_blank', 'noopener,noreferrer');
+  };
+
   const activeTimerList = Object.values(timers);
 
+  const surfaceClass = darkMode
+    ? 'bg-slate-900 text-slate-100 border-slate-800'
+    : 'bg-white text-stone-900 border-stone-200';
+  const mutedTextClass = darkMode ? 'text-slate-400' : 'text-stone-500';
+  const inputClass = darkMode
+    ? 'bg-slate-800 text-slate-100 border-slate-700 focus:border-amber-400'
+    : 'bg-white text-stone-900 border-stone-300 focus:border-amber-500';
+
   return (
-    <main dir="rtl" className="min-h-screen bg-stone-50 text-stone-900 p-4 md:p-8 font-sans">
+    <main
+      dir="rtl"
+      className={
+        'min-h-screen p-4 md:p-8 font-sans transition-colors ' +
+        (darkMode ? 'bg-slate-950 text-slate-100' : 'bg-stone-50 text-stone-900')
+      }
+    >
       <div className="max-w-5xl mx-auto space-y-6">
-        <header className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-white p-6 rounded-2xl shadow-sm border border-stone-200">
+        <header
+          className={
+            'flex flex-col md:flex-row md:items-center justify-between gap-4 p-6 rounded-2xl shadow-sm border ' +
+            surfaceClass
+          }
+        >
           <div>
-            <h1 className="text-2xl md:text-3xl font-bold text-stone-900">
-              ממיר מתכונים חכם
-            </h1>
-            <p className="text-stone-500 text-sm mt-1">
+            <h1 className="text-2xl md:text-3xl font-bold">ממיר מתכונים חכם</h1>
+            <p className={mutedTextClass + ' text-sm mt-1'}>
               חילוץ מקישור או בלוג, התאמת מנות, המרה לגרמים וטיימרים מותאמים אישית — ללא AI
             </p>
           </div>
 
-          <button
-            onClick={() => setCookingMode(!cookingMode)}
-            className={
-              'px-5 py-2.5 rounded-xl font-medium text-sm transition-all cursor-pointer ' +
-              (cookingMode
-                ? 'bg-emerald-600 text-white shadow-md'
-                : 'bg-stone-100 text-stone-700 hover:bg-stone-200')
-            }
-          >
-            {cookingMode ? 'מצב בישול פעיל (מסך דלוק)' : 'הפעל מצב בישול'}
-          </button>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setDarkMode(!darkMode)}
+              className={
+                'px-4 py-2.5 rounded-xl font-medium text-sm transition-all cursor-pointer border ' +
+                (darkMode
+                  ? 'bg-slate-800 text-amber-300 border-slate-700 hover:bg-slate-700'
+                  : 'bg-stone-100 text-stone-700 border-stone-200 hover:bg-stone-200')
+              }
+            >
+              {darkMode ? 'מצב בהיר' : 'מצב כהה'}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setCookingMode(!cookingMode)}
+              className={
+                'px-5 py-2.5 rounded-xl font-medium text-sm transition-all cursor-pointer ' +
+                (cookingMode
+                  ? 'bg-emerald-600 text-white shadow-md'
+                  : darkMode
+                  ? 'bg-slate-800 text-slate-200 hover:bg-slate-700'
+                  : 'bg-stone-100 text-stone-700 hover:bg-stone-200')
+              }
+            >
+              {cookingMode ? 'מצב בישול פעיל (מסך דלוק)' : 'הפעל מצב בישול'}
+            </button>
+          </div>
         </header>
 
-        <section className="bg-white p-6 rounded-2xl shadow-sm border border-stone-200 space-y-4">
+        {/* טיימר ידני מותאם אישית + תזכורת מוקדמת */}
+        <section className={'p-6 rounded-2xl shadow-sm border space-y-4 ' + surfaceClass}>
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
             <div>
               <h2 className="font-bold text-lg">טיימר מותאם אישית ותזכורת מוקדמת</h2>
-              <p className="text-xs text-stone-500">
+              <p className={mutedTextClass + ' text-xs'}>
                 הגדירו שעות, דקות ושניות + התראה מקדימה בדקות (עד 60 דקות ולא מעבר לזמן הטיימר)
               </p>
             </div>
@@ -1169,7 +1379,7 @@ export default function SmartRecipeScalerPage() {
 
           <div className="grid grid-cols-1 md:grid-cols-12 gap-3 items-end">
             <div className="md:col-span-3">
-              <label className="block text-xs font-semibold text-stone-500 mb-1">
+              <label className={mutedTextClass + ' block text-xs font-semibold mb-1'}>
                 שם הטיימר (אופציונלי)
               </label>
               <input
@@ -1177,13 +1387,13 @@ export default function SmartRecipeScalerPage() {
                 value={customTitle}
                 onChange={(e) => setCustomTitle(e.target.value)}
                 placeholder="למשל: עוגה בתנור / פסטה"
-                className="w-full px-3 py-2 border border-stone-300 rounded-xl text-sm focus:outline-none focus:border-amber-500"
+                className={'w-full px-3 py-2 border rounded-xl text-sm focus:outline-none ' + inputClass}
               />
             </div>
 
             <div className="md:col-span-4 grid grid-cols-3 gap-2">
               <div>
-                <label className="block text-xs font-semibold text-stone-500 text-center mb-1">
+                <label className={mutedTextClass + ' block text-xs font-semibold text-center mb-1'}>
                   שעות
                 </label>
                 <input
@@ -1192,11 +1402,11 @@ export default function SmartRecipeScalerPage() {
                   max={24}
                   value={customHours}
                   onChange={(e) => setCustomHours(Math.max(0, Math.min(24, Number(e.target.value))))}
-                  className="w-full px-2 py-2 border border-stone-300 rounded-xl text-center font-mono font-bold"
+                  className={'w-full px-2 py-2 border rounded-xl text-center font-mono font-bold ' + inputClass}
                 />
               </div>
               <div>
-                <label className="block text-xs font-semibold text-stone-500 text-center mb-1">
+                <label className={mutedTextClass + ' block text-xs font-semibold text-center mb-1'}>
                   דקות
                 </label>
                 <input
@@ -1205,11 +1415,11 @@ export default function SmartRecipeScalerPage() {
                   max={59}
                   value={customMinutes}
                   onChange={(e) => setCustomMinutes(Math.max(0, Math.min(59, Number(e.target.value))))}
-                  className="w-full px-2 py-2 border border-stone-300 rounded-xl text-center font-mono font-bold"
+                  className={'w-full px-2 py-2 border rounded-xl text-center font-mono font-bold ' + inputClass}
                 />
               </div>
               <div>
-                <label className="block text-xs font-semibold text-stone-500 text-center mb-1">
+                <label className={mutedTextClass + ' block text-xs font-semibold text-center mb-1'}>
                   שניות
                 </label>
                 <input
@@ -1218,14 +1428,14 @@ export default function SmartRecipeScalerPage() {
                   max={59}
                   value={customSeconds}
                   onChange={(e) => setCustomSeconds(Math.max(0, Math.min(59, Number(e.target.value))))}
-                  className="w-full px-2 py-2 border border-stone-300 rounded-xl text-center font-mono font-bold"
+                  className={'w-full px-2 py-2 border rounded-xl text-center font-mono font-bold ' + inputClass}
                 />
               </div>
             </div>
 
             <div className="md:col-span-3 space-y-1">
               <div className="flex items-center justify-between">
-                <label className="flex items-center gap-1.5 text-xs font-semibold text-stone-700 cursor-pointer">
+                <label className="flex items-center gap-1.5 text-xs font-semibold cursor-pointer">
                   <input
                     type="checkbox"
                     checked={reminderEnabled && maxAllowedReminderMinutes > 0}
@@ -1240,7 +1450,7 @@ export default function SmartRecipeScalerPage() {
                   />
                   <span>תזכורת לפני (דקות):</span>
                 </label>
-                <span className="text-[11px] text-stone-400">
+                <span className={mutedTextClass + ' text-[11px]'}>
                   מקס׳ {maxAllowedReminderMinutes} דק׳
                 </span>
               </div>
@@ -1255,7 +1465,10 @@ export default function SmartRecipeScalerPage() {
                   const clamped = Math.max(0, Math.min(maxAllowedReminderMinutes, isNaN(val) ? 0 : val));
                   setReminderMinutesInput(clamped);
                 }}
-                className="w-full px-3 py-2 border border-stone-300 disabled:bg-stone-100 disabled:text-stone-400 rounded-xl text-center font-mono font-semibold"
+                className={
+                  'w-full px-3 py-2 border disabled:opacity-50 rounded-xl text-center font-mono font-semibold ' +
+                  inputClass
+                }
               />
             </div>
 
@@ -1271,17 +1484,19 @@ export default function SmartRecipeScalerPage() {
           </div>
 
           {customTimerError && (
-            <div className="text-xs font-medium text-red-600">{customTimerError}</div>
+            <div className="text-xs font-medium text-red-500">{customTimerError}</div>
           )}
         </section>
 
+        {/* סרגל טיימרים פעילים */}
         {activeTimerList.length > 0 && (
-          <section className="bg-stone-900 text-white p-5 rounded-2xl shadow-md space-y-3">
+          <section className="bg-stone-900 text-white p-5 rounded-2xl shadow-md space-y-3 border border-stone-800">
             <div className="flex items-center justify-between">
               <h2 className="font-bold text-sm tracking-wide text-amber-400">
                 טיימרים פעילים במטבח ({activeTimerList.length})
               </h2>
               <button
+                type="button"
                 onClick={() => setTimers({})}
                 className="text-xs text-stone-400 hover:text-white cursor-pointer"
               >
@@ -1295,7 +1510,7 @@ export default function SmartRecipeScalerPage() {
                   className={
                     'p-3.5 rounded-xl border flex flex-col justify-between gap-2.5 ' +
                     (t.finished
-                      ? 'bg-red-950/90 border-red-500 animate-pulse'
+                      ? 'bg-red-950/90 border-red-500 ' + (!t.muted ? 'animate-pulse' : '')
                       : t.reminderTriggered
                       ? 'bg-amber-950/70 border-amber-400'
                       : 'bg-stone-800 border-stone-700')
@@ -1320,6 +1535,7 @@ export default function SmartRecipeScalerPage() {
                       )}
                     </div>
                     <button
+                      type="button"
                       onClick={() => removeTimer(t.id)}
                       className="text-xs text-stone-400 hover:text-red-400 px-1 cursor-pointer"
                       title="הסר טיימר"
@@ -1328,21 +1544,40 @@ export default function SmartRecipeScalerPage() {
                     </button>
                   </div>
 
-                  <div className="flex items-center justify-between gap-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
                     <div className="text-2xl font-mono font-bold">
                       {t.finished ? 'הזמן נגמר!' : formatSecondsClock(t.remaining)}
                     </div>
-                    <div className="flex gap-1.5">
+                    <div className="flex flex-wrap gap-1.5">
                       {t.finished ? (
                         <>
+                          {!t.muted && (
+                            <button
+                              type="button"
+                              onClick={() => muteFinishedTimer(t.id)}
+                              className="px-2.5 py-1.5 rounded-lg bg-stone-700 hover:bg-stone-600 text-amber-300 font-semibold text-xs cursor-pointer"
+                            >
+                              השתק צפצוף
+                            </button>
+                          )}
                           <button
+                            type="button"
                             onClick={() => removeTimer(t.id)}
                             className="px-3 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-stone-950 font-bold text-xs cursor-pointer"
                           >
                             אוקיי - סגור
                           </button>
                           <button
-                            onClick={() => startOrToggleTimer(t.id, t.total, t.label, t.sourceLabel)}
+                            type="button"
+                            onClick={() =>
+                              startOrToggleTimer(
+                                t.id,
+                                t.total,
+                                t.label,
+                                t.sourceLabel,
+                                t.reminderSeconds
+                              )
+                            }
                             className="px-2.5 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-stone-950 font-bold text-xs cursor-pointer"
                           >
                             הפעל שוב
@@ -1351,12 +1586,22 @@ export default function SmartRecipeScalerPage() {
                       ) : (
                         <>
                           <button
-                            onClick={() => startOrToggleTimer(t.id, t.total, t.label, t.sourceLabel)}
+                            type="button"
+                            onClick={() =>
+                              startOrToggleTimer(
+                                t.id,
+                                t.total,
+                                t.label,
+                                t.sourceLabel,
+                                t.reminderSeconds
+                              )
+                            }
                             className="px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-stone-950 font-bold text-xs cursor-pointer"
                           >
                             {t.running ? 'השהה' : 'המשך'}
                           </button>
                           <button
+                            type="button"
                             onClick={() => resetTimer(t.id)}
                             className="px-2.5 py-1.5 rounded-lg bg-stone-700 hover:bg-stone-600 text-white text-xs cursor-pointer"
                           >
@@ -1372,14 +1617,15 @@ export default function SmartRecipeScalerPage() {
           </section>
         )}
 
+        {/* מחלץ מתכון מקישור או טקסט ארוך */}
         {!cookingMode && (
-          <section className="bg-white p-6 rounded-2xl shadow-sm border border-stone-200 space-y-4">
+          <section className={'p-6 rounded-2xl shadow-sm border space-y-4 ' + surfaceClass}>
             <div className="flex items-center justify-between">
               <h2 className="font-bold text-lg">חילוץ מתכון מקישור (URL) או טקסט בלוג ללא AI</h2>
               <button
                 type="button"
                 onClick={() => setImporterOpen(!importerOpen)}
-                className="text-xs font-medium text-amber-700 hover:underline cursor-pointer"
+                className="text-xs font-medium text-amber-500 hover:underline cursor-pointer"
               >
                 {importerOpen ? 'הסתר חילוץ' : 'הצג חילוץ'}
               </button>
@@ -1393,27 +1639,27 @@ export default function SmartRecipeScalerPage() {
                     value={urlInput}
                     onChange={(e) => setUrlInput(e.target.value)}
                     placeholder="הדבק קישור לעמוד מתכון (https://...)"
-                    className="flex-1 px-3.5 py-2.5 border border-stone-300 rounded-xl text-sm focus:outline-none focus:border-amber-500"
+                    className={'flex-1 px-3.5 py-2.5 border rounded-xl text-sm focus:outline-none ' + inputClass}
                   />
                   <button
                     type="button"
                     disabled={importing}
                     onClick={handleExtractFromUrl}
-                    className="px-5 py-2.5 rounded-xl bg-stone-900 hover:bg-stone-800 disabled:opacity-50 text-white text-sm font-medium cursor-pointer"
+                    className="px-5 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-stone-950 text-sm font-bold cursor-pointer"
                   >
                     {importing ? 'מחלץ קישור...' : 'חלץ מקישור'}
                   </button>
                 </div>
 
                 <div className="space-y-2">
-                  <label className="block text-xs font-semibold text-stone-500">
+                  <label className={mutedTextClass + ' block text-xs font-semibold'}>
                     או הדבק טקסט ארוך / בלוג — המערכת תסנן סיפורים ותפריד מצרכים ושלבים לבד:
                   </label>
                   <textarea
                     rows={4}
                     value={longTextInput}
                     onChange={(e) => setLongTextInput(e.target.value)}
-                    className="w-full p-3 border border-stone-300 rounded-xl text-sm focus:outline-none focus:border-amber-500"
+                    className={'w-full p-3 border rounded-xl text-sm focus:outline-none ' + inputClass}
                   />
                   <div className="flex items-center justify-between gap-3">
                     <button
@@ -1424,7 +1670,7 @@ export default function SmartRecipeScalerPage() {
                       חלץ מצרכים ושלבים מהטקסט
                     </button>
                     {importStatus && (
-                      <span className="text-xs font-medium text-emerald-700">{importStatus}</span>
+                      <span className="text-xs font-medium text-emerald-500">{importStatus}</span>
                     )}
                   </div>
                 </div>
@@ -1433,56 +1679,65 @@ export default function SmartRecipeScalerPage() {
           </section>
         )}
 
-        <section className="grid grid-cols-1 md:grid-cols-3 gap-4 bg-white p-6 rounded-2xl shadow-sm border border-stone-200">
+        {/* התאמת מנות, החלפת רכיבים, יחידות מידה וטמפרטורות */}
+        <section
+          className={'grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 p-6 rounded-2xl shadow-sm border ' + surfaceClass}
+        >
           <div className="space-y-2">
             <div className="flex justify-between items-center">
-              <label className="text-xs font-semibold text-stone-500 uppercase">
+              <label className={mutedTextClass + ' text-xs font-semibold uppercase'}>
                 התאמת מנות (פי {scaleFactor.toFixed(2).replace(/\\.00$/, '')})
               </label>
               <div className="flex gap-1">
                 {[0.5, 1, 2, 3].map((mult) => (
                   <button
                     key={mult}
+                    type="button"
                     onClick={() => setTargetServings(Math.max(1, Math.round(originalServings * mult)))}
-                    className="text-[11px] px-1.5 py-0.5 rounded bg-stone-100 hover:bg-stone-200 text-stone-600 cursor-pointer"
+                    className={
+                      'text-[11px] px-1.5 py-0.5 rounded cursor-pointer ' +
+                      (darkMode
+                        ? 'bg-slate-800 hover:bg-slate-700 text-slate-300'
+                        : 'bg-stone-100 hover:bg-stone-200 text-stone-600')
+                    }
                   >
                     ×{mult}
                   </button>
                 ))}
               </div>
             </div>
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2">
               <div className="flex-1">
-                <span className="text-xs text-stone-500">במקור:</span>
+                <span className={mutedTextClass + ' text-xs'}>במקור:</span>
                 <input
                   type="number"
                   min={1}
                   max={100}
                   value={originalServings}
                   onChange={(e) => setOriginalServings(Math.max(1, Number(e.target.value)))}
-                  className="w-full mt-1 px-3 py-2 border border-stone-300 rounded-lg text-center font-semibold"
+                  className={'w-full mt-1 px-2 py-2 border rounded-lg text-center font-semibold ' + inputClass}
                 />
               </div>
-              <span className="text-stone-400 font-bold pt-5">←</span>
+              <span className={mutedTextClass + ' font-bold pt-5'}>←</span>
               <div className="flex-1">
-                <span className="text-xs text-stone-500">רצוי:</span>
+                <span className={mutedTextClass + ' text-xs'}>רצוי:</span>
                 <input
                   type="number"
                   min={1}
                   max={100}
                   value={targetServings}
                   onChange={(e) => setTargetServings(Math.max(1, Number(e.target.value)))}
-                  className="w-full mt-1 px-3 py-2 border-2 border-amber-500 bg-amber-50/40 rounded-lg text-center font-bold text-amber-900"
+                  className="w-full mt-1 px-2 py-2 border-2 border-amber-500 bg-amber-500/10 rounded-lg text-center font-bold text-amber-500"
                 />
               </div>
             </div>
           </div>
 
           <div className="space-y-2">
-            <label className="block text-xs font-semibold text-stone-500 uppercase">
+            <label className={mutedTextClass + ' block text-xs font-semibold uppercase'}>
               החלפת רכיבים אוטומטית
             </label>
-            <div className="grid grid-cols-2 gap-2 pt-1">
+            <div className="grid grid-cols-2 gap-1.5 pt-1">
               {[
                 { id: 'none', label: 'רגיל' },
                 { id: 'vegan', label: 'טבעוני' },
@@ -1491,11 +1746,14 @@ export default function SmartRecipeScalerPage() {
               ].map((option) => (
                 <button
                   key={option.id}
+                  type="button"
                   onClick={() => setDietMode(option.id as DietMode)}
                   className={
-                    'py-2 px-3 rounded-lg text-xs font-medium border transition-all cursor-pointer ' +
+                    'py-2 px-2.5 rounded-lg text-xs font-medium border transition-all cursor-pointer ' +
                     (dietMode === option.id
-                      ? 'bg-stone-900 text-white border-stone-900'
+                      ? 'bg-amber-500 text-stone-950 border-amber-500 font-bold'
+                      : darkMode
+                      ? 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700'
                       : 'bg-white text-stone-700 border-stone-200 hover:bg-stone-50')
                   }
                 >
@@ -1506,23 +1764,78 @@ export default function SmartRecipeScalerPage() {
           </div>
 
           <div className="space-y-2">
-            <label className="block text-xs font-semibold text-stone-500 uppercase">
+            <label className={mutedTextClass + ' block text-xs font-semibold uppercase'}>
               יחידות מידה
             </label>
             <div className="pt-1">
               <button
+                type="button"
                 onClick={() => setConvertToGrams(!convertToGrams)}
                 className={
-                  'w-full py-3 px-4 rounded-xl text-sm font-medium border transition-all flex items-center justify-between cursor-pointer ' +
+                  'w-full py-3 px-3.5 rounded-xl text-xs font-medium border transition-all flex items-center justify-between cursor-pointer ' +
                   (convertToGrams
-                    ? 'bg-amber-500 text-white border-amber-500 shadow-sm'
+                    ? 'bg-amber-500 text-stone-950 border-amber-500 font-bold shadow-sm'
+                    : darkMode
+                    ? 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700'
                     : 'bg-stone-50 text-stone-700 border-stone-200 hover:bg-stone-100')
                 }
               >
                 <span>המר כוסות וכפות לגרמים</span>
-                <span className="text-xs font-bold px-2 py-0.5 rounded bg-black/10">
+                <span className="text-[11px] font-bold px-2 py-0.5 rounded bg-black/15">
                   {convertToGrams ? 'פעיל' : 'כבוי'}
                 </span>
+              </button>
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <label className={mutedTextClass + ' block text-xs font-semibold uppercase'}>
+              טמפרטורה ואייר-פריי
+            </label>
+            <div className="space-y-2 pt-1">
+              <div className="grid grid-cols-2 gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setTempUnit('C')}
+                  className={
+                    'py-1.5 px-2 rounded-lg text-xs font-bold border cursor-pointer ' +
+                    (tempUnit === 'C'
+                      ? 'bg-amber-500 text-stone-950 border-amber-500'
+                      : darkMode
+                      ? 'bg-slate-800 text-slate-300 border-slate-700'
+                      : 'bg-stone-50 text-stone-700 border-stone-200')
+                  }
+                >
+                  צלזיוס (°C)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setTempUnit('F')}
+                  className={
+                    'py-1.5 px-2 rounded-lg text-xs font-bold border cursor-pointer ' +
+                    (tempUnit === 'F'
+                      ? 'bg-amber-500 text-stone-950 border-amber-500'
+                      : darkMode
+                      ? 'bg-slate-800 text-slate-300 border-slate-700'
+                      : 'bg-stone-50 text-stone-700 border-stone-200')
+                  }
+                >
+                  פרנהייט (°F)
+                </button>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowAirFryerHints(!showAirFryerHints)}
+                className={
+                  'w-full py-1.5 px-2.5 rounded-lg text-xs font-medium border cursor-pointer ' +
+                  (showAirFryerHints
+                    ? 'bg-emerald-600/20 text-emerald-400 border-emerald-500/40'
+                    : darkMode
+                    ? 'bg-slate-800 text-slate-400 border-slate-700'
+                    : 'bg-stone-50 text-stone-600 border-stone-200')
+                }
+              >
+                {showAirFryerHints ? 'הצעות אייר-פריי: מוצגות' : 'הצעות אייר-פריי: מוסתרות'}
               </button>
             </div>
           </div>
@@ -1530,17 +1843,18 @@ export default function SmartRecipeScalerPage() {
 
         <div className={'grid grid-cols-1 gap-6 ' + (cookingMode ? '' : 'lg:grid-cols-2')}>
           {!cookingMode && (
-            <section className="space-y-4 bg-white p-6 rounded-2xl shadow-sm border border-stone-200">
+            <section className={'space-y-4 p-6 rounded-2xl shadow-sm border ' + surfaceClass}>
               <div>
                 <div className="flex justify-between items-center mb-2">
                   <h2 className="font-bold text-lg">1. מצרכים (עריכה ידנית או מחולצים)</h2>
                   <button
+                    type="button"
                     onClick={() => {
                       setRawIngredients('');
                       setRawSteps('');
                       setCheckedItems({});
                     }}
-                    className="text-xs text-stone-400 hover:text-red-500 cursor-pointer"
+                    className={mutedTextClass + ' text-xs hover:text-red-500 cursor-pointer'}
                   >
                     נקה הכל
                   </button>
@@ -1550,7 +1864,7 @@ export default function SmartRecipeScalerPage() {
                   value={rawIngredients}
                   onChange={(e) => setRawIngredients(e.target.value)}
                   placeholder="לדוגמה:&#10;2 כוסות קמח&#10;1/2 כוס סוכר&#10;3 ביצים"
-                  className="w-full p-3 border border-stone-300 rounded-xl text-sm focus:outline-none focus:border-amber-500"
+                  className={'w-full p-3 border rounded-xl text-sm focus:outline-none ' + inputClass}
                 />
               </div>
 
@@ -1561,24 +1875,39 @@ export default function SmartRecipeScalerPage() {
                   value={rawSteps}
                   onChange={(e) => setRawSteps(e.target.value)}
                   placeholder="לדוגמה: אופים 35 דקות ב-180 מעלות..."
-                  className="w-full p-3 border border-stone-300 rounded-xl text-sm focus:outline-none focus:border-amber-500"
+                  className={'w-full p-3 border rounded-xl text-sm focus:outline-none ' + inputClass}
                 />
               </div>
             </section>
           )}
 
-          <section className="space-y-6 bg-white p-6 rounded-2xl shadow-sm border border-stone-200">
+          <section className={'space-y-6 p-6 rounded-2xl shadow-sm border ' + surfaceClass}>
             <div>
-              <div className="flex justify-between items-center mb-3">
+              <div className="flex flex-wrap justify-between items-center gap-2 mb-3">
                 <h2 className="font-bold text-lg">
                   מצרכים מותאמים ({targetServings} מנות)
                 </h2>
-                <button
-                  onClick={handleCopyRecipe}
-                  className="px-3 py-1.5 text-xs font-medium bg-stone-100 hover:bg-stone-200 rounded-lg text-stone-700 cursor-pointer"
-                >
-                  {copied ? 'הועתק!' : 'העתק רשימה'}
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleShareWhatsApp}
+                    className="px-3 py-1.5 text-xs font-bold bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg cursor-pointer"
+                  >
+                    שתף ב-WhatsApp
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleCopyRecipe}
+                    className={
+                      'px-3 py-1.5 text-xs font-medium rounded-lg cursor-pointer ' +
+                      (darkMode
+                        ? 'bg-slate-800 hover:bg-slate-700 text-slate-200'
+                        : 'bg-stone-100 hover:bg-stone-200 text-stone-700')
+                    }
+                  >
+                    {copied ? 'הועתק!' : 'העתק רשימה'}
+                  </button>
+                </div>
               </div>
 
               <ul className="space-y-2.5">
@@ -1592,13 +1921,17 @@ export default function SmartRecipeScalerPage() {
                       className={
                         'p-3 rounded-xl border transition-all cursor-pointer select-none ' +
                         (isChecked
-                          ? 'bg-stone-50 border-stone-200 text-stone-400 line-through'
+                          ? darkMode
+                            ? 'bg-slate-950/60 border-slate-800 text-slate-500 line-through'
+                            : 'bg-stone-50 border-stone-200 text-stone-400 line-through'
+                          : darkMode
+                          ? 'bg-amber-500/10 border-amber-500/25 hover:bg-amber-500/15'
                           : 'bg-amber-50/30 border-amber-200/70 hover:bg-amber-50')
                       }
                     >
                       <div className="font-medium text-base">{item.displayText}</div>
                       {item.substitutionNote && (
-                        <div className="text-xs text-emerald-700 mt-1 font-medium">
+                        <div className="text-xs text-emerald-500 mt-1 font-medium">
                           החלפה חכמה: {item.substitutionNote}
                         </div>
                       )}
@@ -1609,8 +1942,41 @@ export default function SmartRecipeScalerPage() {
             </div>
 
             {stepsWithTimers.length > 0 && (
-              <div className="pt-4 border-t border-stone-200">
-                <h2 className="font-bold text-lg mb-3">שלבי הכנה וטיימרים</h2>
+              <div
+                className={
+                  'pt-4 border-t space-y-3 ' +
+                  (darkMode ? 'border-slate-800' : 'border-stone-200')
+                }
+              >
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                  <h2 className="font-bold text-lg">שלבי הכנה וטיימרים</h2>
+                  <div className="flex items-center gap-2 text-xs">
+                    <label className="flex items-center gap-1.5 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={stepReminderEnabled}
+                        onChange={(e) => setStepReminderEnabled(e.target.checked)}
+                        className="rounded accent-amber-500"
+                      />
+                      <span>תזכורת שלבים (דק׳ לפני):</span>
+                    </label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={60}
+                      disabled={!stepReminderEnabled}
+                      value={stepReminderMinutes}
+                      onChange={(e) =>
+                        setStepReminderMinutes(Math.max(1, Math.min(60, Number(e.target.value) || 1)))
+                      }
+                      className={
+                        'w-14 px-2 py-1 border rounded-lg text-center font-mono font-bold disabled:opacity-50 ' +
+                        inputClass
+                      }
+                    />
+                  </div>
+                </div>
+
                 <ol className="space-y-3">
                   {stepsWithTimers.map((step) => {
                     const key = 'step-' + step.stepNumber;
@@ -1621,7 +1987,11 @@ export default function SmartRecipeScalerPage() {
                         className={
                           'p-3.5 rounded-xl border transition-all flex flex-col gap-2.5 ' +
                           (isChecked
-                            ? 'bg-stone-50 border-stone-200 text-stone-400'
+                            ? darkMode
+                              ? 'bg-slate-950/60 border-slate-800 text-slate-500'
+                              : 'bg-stone-50 border-stone-200 text-stone-400'
+                            : darkMode
+                            ? 'bg-slate-800/60 border-slate-700'
                             : 'bg-white border-stone-200 hover:border-stone-300')
                         }
                       >
@@ -1629,30 +1999,53 @@ export default function SmartRecipeScalerPage() {
                           onClick={() => toggleCheck(key)}
                           className="flex gap-3 items-start cursor-pointer select-none"
                         >
-                          <span className="w-6 h-6 rounded-full bg-stone-900 text-white text-xs font-bold flex items-center justify-center shrink-0 mt-0.5">
+                          <span className="w-6 h-6 rounded-full bg-amber-500 text-stone-950 text-xs font-bold flex items-center justify-center shrink-0 mt-0.5">
                             {step.stepNumber}
                           </span>
                           <span className={'text-sm leading-relaxed ' + (isChecked ? 'line-through' : '')}>
-                            {step.text}
+                            {step.displayText}
                           </span>
                         </div>
+
+                        {showAirFryerHints && step.airFryerHint && (
+                          <div
+                            className={
+                              'mr-9 px-3 py-1.5 rounded-lg text-xs border ' +
+                              (darkMode
+                                ? 'bg-emerald-950/50 border-emerald-800/60 text-emerald-300'
+                                : 'bg-emerald-50 border-emerald-200 text-emerald-800')
+                            }
+                          >
+                            {step.airFryerHint.summary}
+                          </div>
+                        )}
 
                         {step.detectedTimers.length > 0 && (
                           <div className="flex flex-wrap gap-2 pr-9">
                             {step.detectedTimers.map((dt) => {
                               const active = timers[dt.id];
+                              const stepRemSec = getStepReminderSeconds(dt.seconds);
                               const btnLabel = active
                                 ? active.finished
                                   ? 'הסתיים (' + dt.label + ') - הפעל שוב'
-                                  : formatSecondsClock(active.remaining) + (active.running ? ' (פועל)' : ' (מושהה)')
-                                : 'הפעל טיימר: ' + dt.label;
+                                  : formatSecondsClock(active.remaining) +
+                                    (active.running ? ' (פועל)' : ' (מושהה)')
+                                : 'הפעל טיימר: ' +
+                                  dt.label +
+                                  (stepRemSec ? ' • תזכורת ' + Math.round(stepRemSec / 60) + ' דק׳' : '');
 
                               return (
                                 <button
                                   key={dt.id}
                                   type="button"
                                   onClick={() =>
-                                    startOrToggleTimer(dt.id, dt.seconds, dt.label, 'שלב ' + step.stepNumber)
+                                    startOrToggleTimer(
+                                      dt.id,
+                                      dt.seconds,
+                                      dt.label,
+                                      'שלב ' + step.stepNumber,
+                                      stepRemSec
+                                    )
                                   }
                                   className={
                                     'px-3 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ' +
@@ -1660,6 +2053,8 @@ export default function SmartRecipeScalerPage() {
                                       ? 'bg-amber-500 text-stone-950 shadow-sm'
                                       : active?.finished
                                       ? 'bg-red-600 text-white'
+                                      : darkMode
+                                      ? 'bg-slate-700 hover:bg-slate-600 text-amber-300 border border-slate-600'
                                       : 'bg-amber-100/80 hover:bg-amber-200 text-amber-950 border border-amber-300')
                                   }
                                 >
@@ -1691,4 +2086,4 @@ fs.writeFileSync(path.join(process.cwd(), 'lib', 'recipeEngine.ts'), engineCode,
 fs.writeFileSync(path.join(process.cwd(), 'app', 'api', 'extract-recipe', 'route.ts'), apiRouteCode, 'utf8');
 fs.writeFileSync(path.join(process.cwd(), 'app', 'page.tsx'), pageCode, 'utf8');
 
-console.log('עודכן בהצלחה: כותרת הכרטיסייה והודעת 403.');
+console.log('עודכן בהצלחה: WhatsApp, טמפרטורות/אייר-פריי, תזכורות שלבים, השתק צפצוף, התראות דפדפן ומצב כהה.');

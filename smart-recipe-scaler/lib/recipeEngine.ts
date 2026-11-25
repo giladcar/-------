@@ -1,4 +1,5 @@
 export type DietMode = 'none' | 'vegan' | 'gluten-free' | 'dairy-free';
+export type TempUnit = 'C' | 'F';
 
 export interface ParsedIngredient {
   originalLine: string;
@@ -15,6 +16,12 @@ export interface DetectedTimer {
   id: string;
   seconds: number;
   label: string;
+}
+
+export interface AirFryerHint {
+  tempText: string;
+  timeText: string;
+  summary: string;
 }
 
 export interface ExtractedRecipeResult {
@@ -372,6 +379,66 @@ export function extractTimersFromStep(stepText: string, stepIndex: number): Dete
   }
 
   return results;
+}
+
+export function formatStepTemperatures(stepText: string, unit: TempUnit): string {
+  // ממיר טמפרטורות בצלזיוס (כמו 180 מעלות או 180°C) ובפרנהייט (כמו 350°F) ליחידה הנבחרת
+  const cRegex = /(d{2,3})(?:s*(?:°s*C|℃|מעלות(?:s*צלזיוס)?))(?=[s.,!?;:)]|$)/gi;
+  const fRegex = /(d{2,3})s*(?:°s*F|℉)(?=[s.,!?;:)]|$)/gi;
+
+  let result = stepText.replace(cRegex, (fullMatch, numStr) => {
+    const cVal = Number(numStr);
+    if (isNaN(cVal)) return fullMatch;
+    if (unit === 'C') {
+      return cVal + '°C';
+    }
+    const fVal = Math.round((cVal * 9) / 5 + 32);
+    return fVal + '°F';
+  });
+
+  result = result.replace(fRegex, (fullMatch, numStr) => {
+    const fVal = Number(numStr);
+    if (isNaN(fVal)) return fullMatch;
+    if (unit === 'F') {
+      return fVal + '°F';
+    }
+    const cVal = Math.round(((fVal - 32) * 5) / 9);
+    return cVal + '°C';
+  });
+
+  return result;
+}
+
+export function getAirFryerHint(stepText: string, detectedTimers: DetectedTimer[]): AirFryerHint | null {
+  const bakeOrRoastRegex = /(אופים|לאפות|אפייה|צולים|לצלות|צלייה|תנור|bake|roast|oven)/i;
+  if (!bakeOrRoastRegex.test(stepText)) return null;
+
+  let baseCelsius: number | null = null;
+  const cMatch = stepText.match(/(d{2,3})(?:s*(?:°s*C|℃|מעלות(?:s*צלזיוס)?))(?=[s.,!?;:)]|$)/i);
+  const fMatch = stepText.match(/(d{2,3})s*(?:°s*F|℉)(?=[s.,!?;:)]|$)/i);
+
+  if (cMatch) {
+    baseCelsius = Number(cMatch[1]);
+  } else if (fMatch) {
+    baseCelsius = Math.round(((Number(fMatch[1]) - 32) * 5) / 9);
+  }
+
+  const airTempC = baseCelsius !== null ? Math.max(120, baseCelsius - 20) : 165;
+  const airTempF = Math.round((airTempC * 9) / 5 + 32);
+  const tempText = airTempC + '°C / ' + airTempF + '°F';
+
+  let timeText = 'קצר בכ-20% מזמן התנור';
+  if (detectedTimers.length > 0) {
+    const mainSec = detectedTimers[0].seconds;
+    const adjustedMin = Math.max(1, Math.round((mainSec * 0.8) / 60));
+    timeText = 'כ-' + adjustedMin + ' דק׳ (במקום ' + formatCleanNumber(mainSec / 60) + ' דק׳)';
+  }
+
+  return {
+    tempText,
+    timeText,
+    summary: 'אייר-פריי משוער: ' + tempText + ' • ' + timeText,
+  };
 }
 
 export function formatSecondsClock(totalSec: number): string {
