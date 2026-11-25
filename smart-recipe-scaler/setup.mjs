@@ -390,7 +390,6 @@ export function formatSecondsClock(totalSec: number): string {
   return pad(mins) + ':' + pad(secs);
 }
 
-// חילוץ אוטומטי של מצרכים ושלבי הכנה מטקסט חופשי / בלוג ללא AI
 export function extractRecipeFromText(rawText: string): { ingredients: string[]; steps: string[] } {
   const lines = rawText
     .split(/\\r?\\n/)
@@ -462,7 +461,6 @@ export function extractRecipeFromText(rawText: string): { ingredients: string[];
       continue;
     }
 
-    // מצב ללא כותרות מפורשות (Section === 'unknown')
     const looksLikeIngredient =
       line.length <= 75 &&
       startsWithAmountOrUnit.test(line) &&
@@ -575,7 +573,6 @@ export async function POST(req: NextRequest) {
 
     const html = await response.text();
 
-    // ניסיון ראשון: חילוץ נתוני Schema.org Recipe מתוך JSON-LD
     const jsonLdMatches = [...html.matchAll(/<script[^>]*type=["']application\\/ld\\+json["'][^>]*>([\\s\\S]*?)<\\/script>/gi)];
     for (const match of jsonLdMatches) {
       try {
@@ -608,7 +605,6 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // ניסיון שני: ניקוי תגיות HTML והפעלת מנוע החילוץ הדטרמיניסטי על הטקסט
     const plainText = stripTagsToText(html);
     const extracted = extractRecipeFromText(plainText);
 
@@ -671,14 +667,16 @@ const SAMPLE_LONG_TEXT = [
 interface ActiveTimerState {
   id: string;
   label: string;
-  stepNumber: number;
+  sourceLabel: string;
   remaining: number;
   total: number;
   running: boolean;
   finished: boolean;
+  reminderSeconds: number | null;
+  reminderTriggered: boolean;
 }
 
-function playAlarmBeep() {
+function playAlarmBeep(kind: 'finish' | 'reminder' = 'finish') {
   if (typeof window === 'undefined') return;
   const AudioCtx =
     window.AudioContext ||
@@ -687,13 +685,13 @@ function playAlarmBeep() {
 
   try {
     const ctx = new AudioCtx();
-    const notes = [880, 1174.66, 880];
+    const notes = kind === 'finish' ? [880, 1174.66, 880, 1318.5] : [659.25, 880];
     notes.forEach((freq, i) => {
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
       osc.type = 'sine';
       osc.frequency.value = freq;
-      gain.gain.setValueAtTime(0.18, ctx.currentTime + i * 0.22);
+      gain.gain.setValueAtTime(0.2, ctx.currentTime + i * 0.22);
       gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + i * 0.22 + 0.2);
       osc.connect(gain);
       gain.connect(ctx.destination);
@@ -717,6 +715,16 @@ export default function SmartRecipeScalerPage() {
   const [copied, setCopied] = useState<boolean>(false);
   const [timers, setTimers] = useState<Record<string, ActiveTimerState>>({});
   const finishedSoundPlayedRef = useRef<Record<string, boolean>>({});
+  const reminderSoundPlayedRef = useRef<Record<string, boolean>>({});
+
+  // מצב טיימר מותאם אישית (שעות, דקות, שניות + תזכורת מוקדמת)
+  const [customTitle, setCustomTitle] = useState<string>('');
+  const [customHours, setCustomHours] = useState<number>(0);
+  const [customMinutes, setCustomMinutes] = useState<number>(10);
+  const [customSeconds, setCustomSeconds] = useState<number>(0);
+  const [reminderEnabled, setReminderEnabled] = useState<boolean>(true);
+  const [reminderMinutesInput, setReminderMinutesInput] = useState<number>(5);
+  const [customTimerError, setCustomTimerError] = useState<string | null>(null);
 
   // מצב חילוץ אוטומטי (קישור URL או טקסט ארוך)
   const [importerOpen, setImporterOpen] = useState<boolean>(true);
@@ -760,14 +768,40 @@ export default function SmartRecipeScalerPage() {
           if (t.running && t.remaining > 0) {
             changed = true;
             const nextRem = t.remaining - 1;
+
+            let reminderTriggered = t.reminderTriggered;
+            if (
+              t.reminderSeconds !== null &&
+              t.reminderSeconds > 0 &&
+              !reminderTriggered &&
+              nextRem > 0 &&
+              nextRem <= t.reminderSeconds
+            ) {
+              reminderTriggered = true;
+              if (!reminderSoundPlayedRef.current[id]) {
+                reminderSoundPlayedRef.current[id] = true;
+                playAlarmBeep('reminder');
+              }
+            }
+
             if (nextRem === 0) {
               if (!finishedSoundPlayedRef.current[id]) {
                 finishedSoundPlayedRef.current[id] = true;
-                playAlarmBeep();
+                playAlarmBeep('finish');
               }
-              next[id] = { ...t, remaining: 0, running: false, finished: true };
+              next[id] = {
+                ...t,
+                remaining: 0,
+                running: false,
+                finished: true,
+                reminderTriggered,
+              };
             } else {
-              next[id] = { ...t, remaining: nextRem };
+              next[id] = {
+                ...t,
+                remaining: nextRem,
+                reminderTriggered,
+              };
             }
           } else {
             next[id] = t;
@@ -780,6 +814,76 @@ export default function SmartRecipeScalerPage() {
 
     return () => clearInterval(interval);
   }, []);
+
+  // חישוב זמן כולל בשניות ומקסימום דקות לתזכורת (עד 60 דקות ולא יותר מאורך הטיימר)
+  const customTotalSeconds = useMemo(() => {
+    const h = Math.max(0, Math.floor(customHours || 0));
+    const m = Math.max(0, Math.floor(customMinutes || 0));
+    const s = Math.max(0, Math.floor(customSeconds || 0));
+    return h * 3600 + m * 60 + s;
+  }, [customHours, customMinutes, customSeconds]);
+
+  const maxAllowedReminderMinutes = useMemo(() => {
+    if (customTotalSeconds <= 60) return 0;
+    // חייב להיות פחות מהזמן הכולל של הטיימר ולא יותר מ-60 דקות
+    const strictlyLessThanTotal = Math.floor((customTotalSeconds - 1) / 60);
+    return Math.min(60, Math.max(0, strictlyLessThanTotal));
+  }, [customTotalSeconds]);
+
+  // עדכון אוטומטי של שדה התזכורת אם המשתמש קיצר את זמן הטיימר מתחת לערך התזכורת
+  useEffect(() => {
+    if (maxAllowedReminderMinutes === 0) {
+      setReminderMinutesInput(0);
+    } else if (reminderMinutesInput > maxAllowedReminderMinutes) {
+      setReminderMinutesInput(maxAllowedReminderMinutes);
+    }
+  }, [maxAllowedReminderMinutes, reminderMinutesInput]);
+
+  const handleStartCustomTimer = () => {
+    setCustomTimerError(null);
+
+    if (customTotalSeconds <= 0) {
+      setCustomTimerError('יש להגדיר לפחות שנייה אחת לטיימר.');
+      return;
+    }
+
+    let validReminderSec: number | null = null;
+    if (reminderEnabled && reminderMinutesInput > 0) {
+      if (reminderMinutesInput > 60) {
+        setCustomTimerError('אי אפשר להגדיר תזכורת יותר מ-60 דקות לפני הסיום.');
+        return;
+      }
+      const remSec = Math.floor(reminderMinutesInput) * 60;
+      if (remSec >= customTotalSeconds) {
+        setCustomTimerError('זמן התזכורת חייב להיות קצר מזמן הטיימר הכולל.');
+        return;
+      }
+      validReminderSec = remSec;
+    }
+
+    const id = 'custom-timer-' + Date.now();
+    const labelParts: string[] = [];
+    if (customHours > 0) labelParts.push(customHours + ' שע\'');
+    if (customMinutes > 0) labelParts.push(customMinutes + ' דק\'');
+    if (customSeconds > 0) labelParts.push(customSeconds + ' שנ\'');
+
+    const titleText = customTitle.trim() ? customTitle.trim() : 'טיימר מותאם אישית';
+
+    setTimers((prev) => ({
+      ...prev,
+      [id]: {
+        id,
+        label: labelParts.join(' '),
+        sourceLabel: titleText,
+        remaining: customTotalSeconds,
+        total: customTotalSeconds,
+        running: true,
+        finished: false,
+        reminderSeconds: validReminderSec,
+        reminderTriggered: false,
+      },
+    }));
+  };
 
   const scaleFactor = useMemo(() => {
     if (originalServings <= 0 || targetServings <= 0) return 1;
@@ -813,7 +917,6 @@ export default function SmartRecipeScalerPage() {
       setRawSteps(steps.join('\\n'));
     }
     setCheckedItems({});
-    setTimers({});
     setImportStatus(
       label + ' — חולצו ' + ingredients.length + ' מצרכים ו-' + steps.length + ' שלבי הכנה.'
     );
@@ -850,8 +953,9 @@ export default function SmartRecipeScalerPage() {
     }
   };
 
-  const startOrToggleTimer = (id: string, totalSeconds: number, label: string, stepNumber: number) => {
+  const startOrToggleTimer = (id: string, totalSeconds: number, label: string, sourceLabel: string) => {
     delete finishedSoundPlayedRef.current[id];
+    delete reminderSoundPlayedRef.current[id];
     setTimers((prev) => {
       const existing = prev[id];
       if (!existing) {
@@ -860,11 +964,13 @@ export default function SmartRecipeScalerPage() {
           [id]: {
             id,
             label,
-            stepNumber,
+            sourceLabel,
             remaining: totalSeconds,
             total: totalSeconds,
             running: true,
             finished: false,
+            reminderSeconds: null,
+            reminderTriggered: false,
           },
         };
       }
@@ -877,6 +983,7 @@ export default function SmartRecipeScalerPage() {
             total: totalSeconds,
             running: true,
             finished: false,
+            reminderTriggered: false,
           },
         };
       }
@@ -892,6 +999,7 @@ export default function SmartRecipeScalerPage() {
 
   const resetTimer = (id: string) => {
     delete finishedSoundPlayedRef.current[id];
+    delete reminderSoundPlayedRef.current[id];
     setTimers((prev) => {
       const existing = prev[id];
       if (!existing) return prev;
@@ -902,8 +1010,19 @@ export default function SmartRecipeScalerPage() {
           remaining: existing.total,
           running: false,
           finished: false,
+          reminderTriggered: false,
         },
       };
+    });
+  };
+
+  const removeTimer = (id: string) => {
+    delete finishedSoundPlayedRef.current[id];
+    delete reminderSoundPlayedRef.current[id];
+    setTimers((prev) => {
+      const copy = { ...prev };
+      delete copy[id];
+      return copy;
     });
   };
 
@@ -929,7 +1048,7 @@ export default function SmartRecipeScalerPage() {
               ממיר מתכונים חכם
             </h1>
             <p className="text-stone-500 text-sm mt-1">
-              חילוץ מקישור או בלוג, התאמת מנות, המרה לגרמים וטיימרים — ללא AI
+              חילוץ מקישור או בלוג, התאמת מנות, המרה לגרמים וטיימרים מותאמים אישית — ללא AI
             </p>
           </div>
 
@@ -945,6 +1064,204 @@ export default function SmartRecipeScalerPage() {
             {cookingMode ? 'מצב בישול פעיל (מסך דלוק)' : 'הפעל מצב בישול'}
           </button>
         </header>
+
+        {/* טיימר ידני מותאם אישית + תזכורת מוקדמת */}
+        <section className="bg-white p-6 rounded-2xl shadow-sm border border-stone-200 space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <div>
+              <h2 className="font-bold text-lg">טיימר מותאם אישית ותזכורת מוקדמת</h2>
+              <p className="text-xs text-stone-500">
+                הגדירו שעות, דקות ושניות + התראה מקדימה בדקות (עד 60 דקות ולא מעבר לזמן הטיימר)
+              </p>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-12 gap-3 items-end">
+            <div className="md:col-span-3">
+              <label className="block text-xs font-semibold text-stone-500 mb-1">
+                שם הטיימר (אופציונלי)
+              </label>
+              <input
+                type="text"
+                value={customTitle}
+                onChange={(e) => setCustomTitle(e.target.value)}
+                placeholder="למשל: עוגה בתנור / פסטה"
+                className="w-full px-3 py-2 border border-stone-300 rounded-xl text-sm focus:outline-none focus:border-amber-500"
+              />
+            </div>
+
+            <div className="md:col-span-4 grid grid-cols-3 gap-2">
+              <div>
+                <label className="block text-xs font-semibold text-stone-500 text-center mb-1">
+                  שעות
+                </label>
+                <input
+                  type="number"
+                  min={0}
+                  max={24}
+                  value={customHours}
+                  onChange={(e) => setCustomHours(Math.max(0, Math.min(24, Number(e.target.value))))}
+                  className="w-full px-2 py-2 border border-stone-300 rounded-xl text-center font-mono font-bold"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-stone-500 text-center mb-1">
+                  דקות
+                </label>
+                <input
+                  type="number"
+                  min={0}
+                  max={59}
+                  value={customMinutes}
+                  onChange={(e) => setCustomMinutes(Math.max(0, Math.min(59, Number(e.target.value))))}
+                  className="w-full px-2 py-2 border border-stone-300 rounded-xl text-center font-mono font-bold"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-stone-500 text-center mb-1">
+                  שניות
+                </label>
+                <input
+                  type="number"
+                  min={0}
+                  max={59}
+                  value={customSeconds}
+                  onChange={(e) => setCustomSeconds(Math.max(0, Math.min(59, Number(e.target.value))))}
+                  className="w-full px-2 py-2 border border-stone-300 rounded-xl text-center font-mono font-bold"
+                />
+              </div>
+            </div>
+
+            <div className="md:col-span-3 space-y-1">
+              <div className="flex items-center justify-between">
+                <label className="flex items-center gap-1.5 text-xs font-semibold text-stone-700 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={reminderEnabled && maxAllowedReminderMinutes > 0}
+                    disabled={maxAllowedReminderMinutes === 0}
+                    onChange={(e) => {
+                      setReminderEnabled(e.target.checked);
+                      if (e.target.checked && reminderMinutesInput === 0) {
+                        setReminderMinutesInput(Math.min(5, maxAllowedReminderMinutes));
+                      }
+                    }}
+                    className="rounded accent-amber-500"
+                  />
+                  <span>תזכורת לפני (דקות):</span>
+                </label>
+                <span className="text-[11px] text-stone-400">
+                  מקס׳ {maxAllowedReminderMinutes} דק׳
+                </span>
+              </div>
+              <input
+                type="number"
+                min={0}
+                max={maxAllowedReminderMinutes}
+                disabled={!reminderEnabled || maxAllowedReminderMinutes === 0}
+                value={maxAllowedReminderMinutes === 0 ? 0 : reminderMinutesInput}
+                onChange={(e) => {
+                  const val = Math.floor(Number(e.target.value));
+                  const clamped = Math.max(0, Math.min(maxAllowedReminderMinutes, isNaN(val) ? 0 : val));
+                  setReminderMinutesInput(clamped);
+                }}
+                className="w-full px-3 py-2 border border-stone-300 disabled:bg-stone-100 disabled:text-stone-400 rounded-xl text-center font-mono font-semibold"
+              />
+            </div>
+
+            <div className="md:col-span-2">
+              <button
+                type="button"
+                onClick={handleStartCustomTimer}
+                className="w-full py-2.5 px-4 rounded-xl bg-amber-500 hover:bg-amber-400 text-stone-950 font-bold text-sm shadow-sm transition-all cursor-pointer"
+              >
+                הפעל טיימר
+              </button>
+            </div>
+          </div>
+
+          {customTimerError && (
+            <div className="text-xs font-medium text-red-600">{customTimerError}</div>
+          )}
+        </section>
+
+        {/* סרגל טיימרים פעילים */}
+        {activeTimerList.length > 0 && (
+          <section className="bg-stone-900 text-white p-5 rounded-2xl shadow-md space-y-3">
+            <div className="flex items-center justify-between">
+              <h2 className="font-bold text-sm tracking-wide text-amber-400">
+                טיימרים פעילים במטבח ({activeTimerList.length})
+              </h2>
+              <button
+                onClick={() => setTimers({})}
+                className="text-xs text-stone-400 hover:text-white cursor-pointer"
+              >
+                נקה הכל
+              </button>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+              {activeTimerList.map((t) => (
+                <div
+                  key={t.id}
+                  className={
+                    'p-3.5 rounded-xl border flex flex-col justify-between gap-2.5 ' +
+                    (t.finished
+                      ? 'bg-red-950/90 border-red-500 animate-pulse'
+                      : t.reminderTriggered
+                      ? 'bg-amber-950/70 border-amber-400'
+                      : 'bg-stone-800 border-stone-700')
+                  }
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div>
+                      <div className="text-xs text-stone-300 font-medium">
+                        {t.sourceLabel} • {t.label}
+                      </div>
+                      {t.reminderSeconds !== null && t.reminderSeconds > 0 && (
+                        <div
+                          className={
+                            'text-[11px] mt-0.5 ' +
+                            (t.reminderTriggered ? 'text-amber-300 font-bold' : 'text-stone-400')
+                          }
+                        >
+                          {t.reminderTriggered
+                            ? 'התראת ' + Math.round(t.reminderSeconds / 60) + ' דק׳ לפני הופעלה!'
+                            : 'תזכורת ' + Math.round(t.reminderSeconds / 60) + ' דק׳ לפני הסיום'}
+                        </div>
+                      )}
+                    </div>
+                    <button
+                      onClick={() => removeTimer(t.id)}
+                      className="text-xs text-stone-400 hover:text-red-400 px-1 cursor-pointer"
+                      title="הסר טיימר"
+                    >
+                      ✕
+                    </button>
+                  </div>
+
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="text-2xl font-mono font-bold">
+                      {t.finished ? 'הזמן נגמר!' : formatSecondsClock(t.remaining)}
+                    </div>
+                    <div className="flex gap-1.5">
+                      <button
+                        onClick={() => startOrToggleTimer(t.id, t.total, t.label, t.sourceLabel)}
+                        className="px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-stone-950 font-bold text-xs cursor-pointer"
+                      >
+                        {t.finished ? 'הפעל שוב' : t.running ? 'השהה' : 'המשך'}
+                      </button>
+                      <button
+                        onClick={() => resetTimer(t.id)}
+                        className="px-2.5 py-1.5 rounded-lg bg-stone-700 hover:bg-stone-600 text-white text-xs cursor-pointer"
+                      >
+                        איפוס
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
 
         {/* מחלץ מתכון מקישור או טקסט ארוך */}
         {!cookingMode && (
@@ -1005,58 +1322,6 @@ export default function SmartRecipeScalerPage() {
                 </div>
               </div>
             )}
-          </section>
-        )}
-
-        {activeTimerList.length > 0 && (
-          <section className="bg-stone-900 text-white p-5 rounded-2xl shadow-md space-y-3">
-            <div className="flex items-center justify-between">
-              <h2 className="font-bold text-sm tracking-wide text-amber-400">
-                טיימרים במטבח ({activeTimerList.length})
-              </h2>
-              <button
-                onClick={() => setTimers({})}
-                className="text-xs text-stone-400 hover:text-white cursor-pointer"
-              >
-                נקה טיימרים
-              </button>
-            </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-              {activeTimerList.map((t) => (
-                <div
-                  key={t.id}
-                  className={
-                    'p-3.5 rounded-xl border flex items-center justify-between gap-3 ' +
-                    (t.finished
-                      ? 'bg-red-950/80 border-red-500 animate-pulse'
-                      : 'bg-stone-800 border-stone-700')
-                  }
-                >
-                  <div>
-                    <div className="text-xs text-stone-400">
-                      שלב {t.stepNumber} • {t.label}
-                    </div>
-                    <div className="text-2xl font-mono font-bold mt-0.5">
-                      {t.finished ? 'הזמן נגמר!' : formatSecondsClock(t.remaining)}
-                    </div>
-                  </div>
-                  <div className="flex gap-1.5">
-                    <button
-                      onClick={() => startOrToggleTimer(t.id, t.total, t.label, t.stepNumber)}
-                      className="px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-stone-950 font-bold text-xs cursor-pointer"
-                    >
-                      {t.finished ? 'הפעל שוב' : t.running ? 'השהה' : 'המשך'}
-                    </button>
-                    <button
-                      onClick={() => resetTimer(t.id)}
-                      className="px-2.5 py-1.5 rounded-lg bg-stone-700 hover:bg-stone-600 text-white text-xs cursor-pointer"
-                    >
-                      איפוס
-                    </button>
-                  </div>
-                </div>
-              ))}
-            </div>
           </section>
         )}
 
@@ -1166,7 +1431,6 @@ export default function SmartRecipeScalerPage() {
                       setRawIngredients('');
                       setRawSteps('');
                       setCheckedItems({});
-                      setTimers({});
                     }}
                     className="text-xs text-stone-400 hover:text-red-500 cursor-pointer"
                   >
@@ -1279,7 +1543,9 @@ export default function SmartRecipeScalerPage() {
                                 <button
                                   key={dt.id}
                                   type="button"
-                                  onClick={() => startOrToggleTimer(dt.id, dt.seconds, dt.label, step.stepNumber)}
+                                  onClick={() =>
+                                    startOrToggleTimer(dt.id, dt.seconds, dt.label, 'שלב ' + step.stepNumber)
+                                  }
                                   className={
                                     'px-3 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ' +
                                     (active?.running
@@ -1316,4 +1582,4 @@ fs.writeFileSync(path.join(process.cwd(), 'lib', 'recipeEngine.ts'), engineCode,
 fs.writeFileSync(path.join(process.cwd(), 'app', 'api', 'extract-recipe', 'route.ts'), apiRouteCode, 'utf8');
 fs.writeFileSync(path.join(process.cwd(), 'app', 'page.tsx'), pageCode, 'utf8');
 
-console.log('עודכן בהצלחה: חילוץ מקישור וטקסט ארוך ללא AI נוסף ל-lib/recipeEngine.ts, app/api/extract-recipe/route.ts ו-app/page.tsx');
+console.log('עודכן בהצלחה: טיימר מותאם אישית עם שעות/דקות/שניות ותזכורת מוקדמת מוגבלת ל-60 דקות וזמן הטיימר.');
