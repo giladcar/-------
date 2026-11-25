@@ -1,6 +1,27 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+const layoutCode = `import type { Metadata } from 'next';
+import './globals.css';
+
+export const metadata: Metadata = {
+  title: 'ממיר מתכונים חכם',
+  description: 'התאמת כמויות, המרה לגרמים, החלפת רכיבים וטיימרים מותאמים אישית ללא AI',
+};
+
+export default function RootLayout({
+  children,
+}: Readonly<{
+  children: React.ReactNode;
+}>) {
+  return (
+    <html lang="he" dir="rtl">
+      <body>{children}</body>
+    </html>
+  );
+}
+`;
+
 const engineCode = `export type DietMode = 'none' | 'vegan' | 'gluten-free' | 'dairy-free';
 
 export interface ParsedIngredient {
@@ -564,6 +585,13 @@ export async function POST(req: NextRequest) {
     });
     clearTimeout(timeoutId);
 
+    if (response.status === 403) {
+      return NextResponse.json(
+        { error: 'אין הרשאה לאתר!' },
+        { status: 403 }
+      );
+    }
+
     if (!response.ok) {
       return NextResponse.json(
         { error: 'לא ניתן היה לטעון את העמוד (קוד ' + response.status + ')' },
@@ -676,7 +704,6 @@ interface ActiveTimerState {
   reminderTriggered: boolean;
 }
 
-// מחזיר את משך סבב הצליל במילישניות כדי שנוכל לחזור בדיוק שנייה אחרי שהוא מסתיים
 function playAlarmBeep(kind: 'finish' | 'reminder' = 'finish'): number {
   if (typeof window === 'undefined') return 1000;
   const AudioCtx =
@@ -684,7 +711,6 @@ function playAlarmBeep(kind: 'finish' | 'reminder' = 'finish'): number {
     (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
 
   if (kind === 'reminder') {
-    // צליל ההתראה הוא הצליל שהיה קודם צליל הסיום
     const notes = [880, 1174.66, 880, 1318.5];
     const stepDelay = 0.22;
     const duration = 0.2;
@@ -710,7 +736,6 @@ function playAlarmBeep(kind: 'finish' | 'reminder' = 'finish'): number {
     return Math.round((notes.length - 1) * stepDelay * 1000 + duration * 1000);
   }
 
-  // צלצול סופי מתמשך שנחזור עליו שנייה אחרי שסבב הצלצול מסתיים
   const pattern = [
     { freq: 1046.5, start: 0, dur: 0.28 },
     { freq: 1318.5, start: 0.32, dur: 0.28 },
@@ -756,7 +781,6 @@ export default function SmartRecipeScalerPage() {
   const reminderSoundPlayedRef = useRef<Record<string, boolean>>({});
   const finishSoundDurationRef = useRef<number>(1600);
 
-  // מצב טיימר מותאם אישית (שעות, דקות, שניות + תזכורת מוקדמת)
   const [customTitle, setCustomTitle] = useState<string>('');
   const [customHours, setCustomHours] = useState<number>(0);
   const [customMinutes, setCustomMinutes] = useState<number>(10);
@@ -765,12 +789,15 @@ export default function SmartRecipeScalerPage() {
   const [reminderMinutesInput, setReminderMinutesInput] = useState<number>(5);
   const [customTimerError, setCustomTimerError] = useState<string | null>(null);
 
-  // מצב חילוץ אוטומטי (קישור URL או טקסט ארוך)
   const [importerOpen, setImporterOpen] = useState<boolean>(true);
   const [urlInput, setUrlInput] = useState<string>('');
   const [longTextInput, setLongTextInput] = useState<string>(SAMPLE_LONG_TEXT);
   const [importing, setImporting] = useState<boolean>(false);
   const [importStatus, setImportStatus] = useState<string | null>(null);
+
+  useEffect(() => {
+    document.title = 'ממיר מתכונים חכם';
+  }, []);
 
   useEffect(() => {
     let wakeLock: { release: () => Promise<void> } | null = null;
@@ -859,7 +886,6 @@ export default function SmartRecipeScalerPage() {
     [timers]
   );
 
-  // מפעיל את הצלצול הסופי שוב שנייה אחת אחרי שהסבב הקודם הסתיים, עד שלוחצים על אוקיי - סגור
   useEffect(() => {
     if (!hasFinishedTimers) return;
 
@@ -1131,7 +1157,6 @@ export default function SmartRecipeScalerPage() {
           </button>
         </header>
 
-        {/* טיימר ידני מותאם אישית + תזכורת מוקדמת */}
         <section className="bg-white p-6 rounded-2xl shadow-sm border border-stone-200 space-y-4">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
             <div>
@@ -1250,7 +1275,6 @@ export default function SmartRecipeScalerPage() {
           )}
         </section>
 
-        {/* סרגל טיימרים פעילים */}
         {activeTimerList.length > 0 && (
           <section className="bg-stone-900 text-white p-5 rounded-2xl shadow-md space-y-3">
             <div className="flex items-center justify-between">
@@ -1348,7 +1372,6 @@ export default function SmartRecipeScalerPage() {
           </section>
         )}
 
-        {/* מחלץ מתכון מקישור או טקסט ארוך */}
         {!cookingMode && (
           <section className="bg-white p-6 rounded-2xl shadow-sm border border-stone-200 space-y-4">
             <div className="flex items-center justify-between">
@@ -1663,8 +1686,9 @@ export default function SmartRecipeScalerPage() {
 fs.mkdirSync(path.join(process.cwd(), 'lib'), { recursive: true });
 fs.mkdirSync(path.join(process.cwd(), 'app', 'api', 'extract-recipe'), { recursive: true });
 
+fs.writeFileSync(path.join(process.cwd(), 'app', 'layout.tsx'), layoutCode, 'utf8');
 fs.writeFileSync(path.join(process.cwd(), 'lib', 'recipeEngine.ts'), engineCode, 'utf8');
 fs.writeFileSync(path.join(process.cwd(), 'app', 'api', 'extract-recipe', 'route.ts'), apiRouteCode, 'utf8');
 fs.writeFileSync(path.join(process.cwd(), 'app', 'page.tsx'), pageCode, 'utf8');
 
-console.log('עודכן בהצלחה: התראה החליפה צליל עם הסופי, והסופי חוזר שנייה אחרי שנגמר עד אוקיי - סגור.');
+console.log('עודכן בהצלחה: כותרת הכרטיסייה והודעת 403.');

@@ -85,6 +85,13 @@ export async function POST(req: NextRequest) {
     });
     clearTimeout(timeoutId);
 
+    if (response.status === 403) {
+      return NextResponse.json(
+        { error: 'אין הרשאה לאתר!' },
+        { status: 403 }
+      );
+    }
+
     if (!response.ok) {
       return NextResponse.json(
         { error: 'לא ניתן היה לטעון את העמוד (קוד ' + response.status + ')' },
