@@ -3,7 +3,7 @@ import './globals.css';
 
 export const metadata: Metadata = {
   title: 'ממיר מתכונים חכם',
-  description: 'התאמת כמויות, המרה לגרמים, החלפת רכיבים וטיימרים מותאמים אישית ללא AI',
+  description: 'התאמת כמויות, המרה לגרמים, החלפת רכיבים, טיימרים וספר מתכונים ללא AI',
 };
 
 export default function RootLayout({

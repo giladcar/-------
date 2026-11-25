@@ -382,9 +382,8 @@ export function extractTimersFromStep(stepText: string, stepIndex: number): Dete
 }
 
 export function formatStepTemperatures(stepText: string, unit: TempUnit): string {
-  // ממיר טמפרטורות בצלזיוס (כמו 180 מעלות או 180°C) ובפרנהייט (כמו 350°F) ליחידה הנבחרת
-  const cRegex = /(d{2,3})(?:s*(?:°s*C|℃|מעלות(?:s*צלזיוס)?))(?=[s.,!?;:)]|$)/gi;
-  const fRegex = /(d{2,3})s*(?:°s*F|℉)(?=[s.,!?;:)]|$)/gi;
+  const cRegex = /(\d{2,3})(?:\s*(?:°\s*C|℃|מעלות(?:\s*צלזיוס)?))(?=[\s.,!?;:)]|$)/gi;
+  const fRegex = /(\d{2,3})\s*(?:°\s*F|℉)(?=[\s.,!?;:)]|$)/gi;
 
   let result = stepText.replace(cRegex, (fullMatch, numStr) => {
     const cVal = Number(numStr);
@@ -414,8 +413,8 @@ export function getAirFryerHint(stepText: string, detectedTimers: DetectedTimer[
   if (!bakeOrRoastRegex.test(stepText)) return null;
 
   let baseCelsius: number | null = null;
-  const cMatch = stepText.match(/(d{2,3})(?:s*(?:°s*C|℃|מעלות(?:s*צלזיוס)?))(?=[s.,!?;:)]|$)/i);
-  const fMatch = stepText.match(/(d{2,3})s*(?:°s*F|℉)(?=[s.,!?;:)]|$)/i);
+  const cMatch = stepText.match(/(\d{2,3})(?:\s*(?:°\s*C|℃|מעלות(?:\s*צלזיוס)?))(?=[\s.,!?;:)]|$)/i);
+  const fMatch = stepText.match(/(\d{2,3})\s*(?:°\s*F|℉)(?=[\s.,!?;:)]|$)/i);
 
   if (cMatch) {
     baseCelsius = Number(cMatch[1]);
