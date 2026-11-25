@@ -729,129 +729,145 @@ export default function RecipeBookVault({
             </div>
           ) : (
             <div className="space-y-6">
-              {sheets.map((sheet) => (
-                <div
-                  key={sheet.pageNumber}
-                  style={{
-                    height: '540px',
-                    overflow: 'hidden',
-                    pageBreakAfter: 'always',
-                    breakAfter: 'page',
-                  }}
-                  className={
-                    'p-5 rounded-2xl border flex flex-col justify-between ' +
-                    (darkMode
-                      ? 'bg-slate-800/40 border-slate-700'
-                      : 'bg-stone-50/70 border-stone-300')
-                  }
-                >
-                  <div className="space-y-3 overflow-hidden">
-                    <div className="flex items-center justify-between border-b border-stone-500/20 pb-2 text-xs">
+              {sheets.map((sheet) => {
+                const isBannerSheet =
+                  sheet.blocks.length === 1 &&
+                  (sheet.blocks[0].kind === 'category-banner' ||
+                    sheet.blocks[0].kind === 'subcategory-banner');
+                const recipeBlocks = sheet.blocks.filter((b) => b.kind === 'recipe-part');
+
+                return (
+                  <div
+                    key={sheet.pageNumber}
+                    style={{
+                      width: '100%',
+                      maxWidth: '720px',
+                      aspectRatio: '210 / 297',
+                      pageBreakAfter: 'always',
+                      breakAfter: 'page',
+                    }}
+                    className={
+                      'mx-auto p-6 rounded-2xl border flex flex-col justify-between overflow-hidden ' +
+                      (darkMode
+                        ? 'bg-slate-800/40 border-slate-700'
+                        : 'bg-stone-50/70 border-stone-300')
+                    }
+                  >
+                    <div className="flex items-center justify-between border-b border-stone-500/20 pb-2 text-xs shrink-0">
                       <span className="font-bold text-amber-500">עמוד {sheet.pageNumber}</span>
                       <span className={mutedClass + ' font-mono'}>
-                        גודל קבוע: {sheet.usedLines}/{sheet.capacity} שורות ({sheet.fillFraction})
+                        דף PDF (A4) • {sheet.usedLines}/{sheet.capacity} שורות ({sheet.fillFraction})
                       </span>
                     </div>
 
-                    <div className="space-y-2.5">
-                      {sheet.blocks.map((blk, bIdx) => {
-                        if (blk.kind === 'category') {
-                          return (
-                            <div
-                              key={blk.domId + '-' + bIdx}
-                              id={blk.domId}
-                              className="text-base font-bold text-amber-500 border-r-4 border-amber-500 pr-2.5"
-                            >
-                              {blk.title} — עמוד {blk.pageNumber}
-                            </div>
-                          );
+                    {isBannerSheet ? (
+                      <div
+                        id={sheet.blocks[0].domId}
+                        className="flex-1 flex flex-col items-center justify-center text-center px-6 space-y-4"
+                      >
+                        <div className="text-xs uppercase tracking-widest font-bold text-amber-500">
+                          {sheet.blocks[0].kind === 'category-banner'
+                            ? 'קטגוריה ראשית • עמוד ' + sheet.blocks[0].pageNumber
+                            : sheet.blocks[0].category + ' • עמוד ' + sheet.blocks[0].pageNumber}
+                        </div>
+                        <h3
+                          className={
+                            sheet.blocks[0].kind === 'category-banner'
+                              ? 'text-4xl md:text-5xl font-extrabold text-amber-500'
+                              : 'text-3xl md:text-4xl font-bold'
+                          }
+                        >
+                          {sheet.blocks[0].title}
+                        </h3>
+                        <p className={mutedClass + ' text-sm'}>
+                          {sheet.blocks[0].recipeCount || 0} מתכונים בחלק זה
+                        </p>
+                      </div>
+                    ) : (
+                      <div
+                        className={
+                          'flex-1 my-3 overflow-hidden ' +
+                          (recipeBlocks.length > 1
+                            ? 'grid grid-cols-1 sm:grid-cols-2 gap-3 content-start'
+                            : 'space-y-3')
                         }
-                        if (blk.kind === 'subcategory') {
-                          return (
-                            <div
-                              key={blk.domId + '-' + bIdx}
-                              id={blk.domId}
-                              className="text-xs font-bold pr-3"
-                            >
-                              {blk.category} ← {blk.title} (עמוד {blk.pageNumber})
-                            </div>
-                          );
-                        }
-                        if (blk.kind === 'recipe-part' && blk.recipe) {
-                          const rec = blk.recipe;
-                          const factor =
-                            rec.originalServings > 0
-                              ? rec.targetServings / rec.originalServings
-                              : 1;
-                          const ings = (blk.ingredients || []).map(
-                            (l) =>
-                              parseAndScaleLine(
-                                l,
-                                factor,
-                                rec.dietMode,
-                                rec.convertToGrams,
-                                measureSystem
-                              ).displayText
-                          );
-                          const steps = blk.steps || [];
+                      >
+                        {sheet.blocks.map((blk, bIdx) => {
+                          if (blk.kind === 'recipe-part' && blk.recipe) {
+                            const rec = blk.recipe;
+                            const factor =
+                              rec.originalServings > 0
+                                ? rec.targetServings / rec.originalServings
+                                : 1;
+                            const ings = (blk.ingredients || []).map(
+                              (l) =>
+                                parseAndScaleLine(
+                                  l,
+                                  factor,
+                                  rec.dietMode,
+                                  rec.convertToGrams,
+                                  measureSystem
+                                ).displayText
+                            );
+                            const steps = blk.steps || [];
 
-                          return (
-                            <article
-                              key={blk.domId + '-' + bIdx}
-                              id={blk.domId}
-                              className={
-                                'p-3 rounded-xl border space-y-1.5 ' +
-                                (darkMode
-                                  ? 'bg-slate-900 border-slate-800'
-                                  : 'bg-white border-stone-200')
-                              }
-                            >
-                              <div className="flex items-center justify-between gap-2">
-                                <h5 className="font-bold text-sm">
-                                  {rec.favorite ? '⭐ ' : ''}
-                                  {rec.title}
-                                  {blk.isContinuation ? ' (המשך)' : ''}
-                                </h5>
-                                <span className={mutedClass + ' text-[11px]'}>
-                                  {rec.targetServings} מנות • עמוד {blk.pageNumber}
-                                </span>
-                              </div>
+                            return (
+                              <article
+                                key={blk.domId + '-' + bIdx}
+                                id={blk.domId}
+                                className={
+                                  'p-3.5 rounded-xl border space-y-1.5 ' +
+                                  (darkMode
+                                    ? 'bg-slate-900 border-slate-800'
+                                    : 'bg-white border-stone-200')
+                                }
+                              >
+                                <div className="flex items-center justify-between gap-2">
+                                  <h5 className="font-bold text-sm">
+                                    {rec.favorite ? '⭐ ' : ''}
+                                    {rec.title}
+                                    {blk.isContinuation ? ' (המשך)' : ''}
+                                  </h5>
+                                  <span className={mutedClass + ' text-[11px] shrink-0'}>
+                                    {rec.targetServings} מנות • עמוד {blk.pageNumber}
+                                  </span>
+                                </div>
 
-                              {ings.length > 0 && (
-                                <ul className="list-disc list-inside text-[11px] space-y-0.5">
-                                  {ings.map((line, i) => (
-                                    <li key={i}>{line}</li>
-                                  ))}
-                                </ul>
-                              )}
+                                {ings.length > 0 && (
+                                  <ul className="list-disc list-inside text-[11px] space-y-0.5">
+                                    {ings.map((line, i) => (
+                                      <li key={i}>{line}</li>
+                                    ))}
+                                  </ul>
+                                )}
 
-                              {steps.length > 0 && (
-                                <ol className="list-decimal list-inside text-[11px] space-y-0.5">
-                                  {steps.map((st, i) => (
-                                    <li key={i}>{st}</li>
-                                  ))}
-                                </ol>
-                              )}
-                            </article>
-                          );
-                        }
-                        return null;
-                      })}
+                                {steps.length > 0 && (
+                                  <ol className="list-decimal list-inside text-[11px] space-y-0.5">
+                                    {steps.map((st, i) => (
+                                      <li key={i}>{st}</li>
+                                    ))}
+                                  </ol>
+                                )}
+                              </article>
+                            );
+                          }
+                          return null;
+                        })}
+                      </div>
+                    )}
+
+                    <div
+                      className={
+                        mutedClass +
+                        ' pt-2 border-t border-stone-500/15 text-[11px] flex justify-between shrink-0'
+                      }
+                    >
+                      <span>{bookTitle.trim() || 'ספר המתכונים שלי'}</span>
+                      <span className="font-bold">עמוד {sheet.pageNumber}</span>
                     </div>
                   </div>
-
-                  <div
-                    className={
-                      mutedClass +
-                      ' pt-2 border-t border-stone-500/15 text-[11px] flex justify-between'
-                    }
-                  >
-                    <span>{bookTitle.trim() || 'ספר המתכונים שלי'}</span>
-                    <span className="font-bold">עמוד {sheet.pageNumber}</span>
-                  </div>
-                </div>
-              ))}
-            </div>
+                );
+              })}            </div>
           )}
         </section>
       )}

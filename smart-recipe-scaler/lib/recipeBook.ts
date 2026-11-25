@@ -17,16 +17,17 @@ export interface SavedRecipeItem {
 
 export type BookExportScope = 'all' | 'selected' | 'favorites';
 
-// גודל עמוד קבוע (מספר שורות מקסימלי לעמוד - לא ניתן להקטנה או הגדלה ידנית)
-export const FIXED_PAGE_CAPACITY_LINES = 24;
+// גודל דף קבוע ביחס דף PDF (A4) ובמכסת שורות קבועה
+export const FIXED_PAGE_CAPACITY_LINES = 32;
 
 export interface BookPageBlock {
-  kind: 'category' | 'subcategory' | 'recipe-part';
+  kind: 'category-banner' | 'subcategory-banner' | 'recipe-part';
   title: string;
   pageNumber: number;
   domId: string;
   category: string;
   subCategory: string;
+  recipeCount?: number;
   recipe?: SavedRecipeItem;
   ingredients?: string[];
   steps?: string[];
@@ -122,7 +123,7 @@ export function groupRecipesByCategory(items: SavedRecipeItem[]): Array<{
     }));
 }
 
-function estimateLinesForLinesArray(lines: string[], charsPerLine = 46): number {
+function estimateLinesForLinesArray(lines: string[], charsPerLine = 42): number {
   let total = 0;
   for (const line of lines) {
     const clean = line.trim();
@@ -158,15 +159,10 @@ export function buildFixedSizeBookPages(items: SavedRecipeItem[]): {
   };
 
   const advanceToNextSheet = () => {
-    finalizeAndPushSheet(currentSheet);
-    pageNum += 1;
-    currentSheet = createSheet(pageNum);
-  };
-
-  const ensureLinesOnCurrentSheet = (neededLines: number) => {
-    const cost = Math.min(cap, Math.max(1, neededLines));
-    if (currentSheet.usedLines > 0 && currentSheet.usedLines + cost > cap) {
-      advanceToNextSheet();
+    if (currentSheet.blocks.length > 0) {
+      finalizeAndPushSheet(currentSheet);
+      pageNum += 1;
+      currentSheet = createSheet(pageNum);
     }
   };
 
@@ -174,42 +170,60 @@ export function buildFixedSizeBookPages(items: SavedRecipeItem[]): {
 
   groups.forEach((catGroup, cIdx) => {
     const catDomId = 'book-cat-' + cIdx;
-    ensureLinesOnCurrentSheet(3);
+
+    // כותרת קטגוריה ראשית מופיעה ככותרת גדולה על דף משלה
+    if (currentSheet.blocks.length > 0) {
+      advanceToNextSheet();
+    }
     const catPage = currentSheet.pageNumber;
+    const totalCatRecipes = catGroup.subGroups.reduce((acc, sg) => acc + sg.recipes.length, 0);
+
     currentSheet.blocks.push({
-      kind: 'category',
+      kind: 'category-banner',
       title: catGroup.category,
       pageNumber: catPage,
       domId: catDomId,
       category: catGroup.category,
       subCategory: '',
+      recipeCount: totalCatRecipes,
     });
-    currentSheet.usedLines = Math.min(cap, currentSheet.usedLines + 3);
+    currentSheet.usedLines = cap;
+    advanceToNextSheet();
 
     const tocSubList: TocEntry['subCategories'] = [];
 
     catGroup.subGroups.forEach((subGroup, sIdx) => {
       const subDomId = 'book-sub-' + cIdx + '-' + sIdx;
-      ensureLinesOnCurrentSheet(2);
+
+      // כותרת תת-קטגוריה מופיעה ככותרת בולטת על דף משלה
+      if (currentSheet.blocks.length > 0) {
+        advanceToNextSheet();
+      }
       const subPage = currentSheet.pageNumber;
       currentSheet.blocks.push({
-        kind: 'subcategory',
+        kind: 'subcategory-banner',
         title: subGroup.subCategory,
         pageNumber: subPage,
         domId: subDomId,
         category: catGroup.category,
         subCategory: subGroup.subCategory,
+        recipeCount: subGroup.recipes.length,
       });
-      currentSheet.usedLines = Math.min(cap, currentSheet.usedLines + 2);
+      currentSheet.usedLines = cap;
+      advanceToNextSheet();
 
       const tocRecipeList: TocEntry['subCategories'][number]['recipes'] = [];
 
       subGroup.recipes.forEach((rec, rIdx) => {
-        // כלל השבר: אם העמוד הנוכחי כבר מכיל תוכן והשימוש בו הוא חלקי/שברי (לא 0 ולא עמוד שלם מלא בדיוק),
+        // כלל השבר: אם העמוד הנוכחי כבר מכיל תוכן ומסתיים עם שבר (לא עמוד שלם מלא בדיוק),
         // המתכון הבא עובר לעמוד הבא
         const currentFraction = currentSheet.usedLines / cap;
         const isFractionalRemainder =
-          currentSheet.usedLines > 0 && currentFraction > 0 && currentFraction < 1 && Math.abs(currentFraction - Math.round(currentFraction)) > 0.001;
+          currentSheet.usedLines > 0 &&
+          currentFraction > 0 &&
+          currentFraction < 1 &&
+          currentFraction % 1 !== 0;
+
         if (isFractionalRemainder) {
           advanceToNextSheet();
         }
@@ -235,18 +249,17 @@ export function buildFixedSizeBookPages(items: SavedRecipeItem[]): {
             advanceToNextSheet();
           }
 
-          const available = cap - currentSheet.usedLines;
           const headerCost = 3;
-          if (available <= headerCost) {
+          if (cap - currentSheet.usedLines <= headerCost && currentSheet.blocks.length > 0) {
             advanceToNextSheet();
           }
 
-          let budget = cap - currentSheet.usedLines - headerCost;
+          let budget = Math.max(1, cap - currentSheet.usedLines - headerCost);
           const partIngs: string[] = [];
           const partSteps: string[] = [];
 
           while (ingCursor < allIngs.length) {
-            const lineCost = Math.max(1, Math.ceil(allIngs[ingCursor].length / 46));
+            const lineCost = Math.max(1, Math.ceil(allIngs[ingCursor].length / 42));
             if (partIngs.length > 0 && budget < lineCost) break;
             if (budget < lineCost && partIngs.length === 0 && partSteps.length > 0) break;
             partIngs.push(allIngs[ingCursor]);
@@ -255,7 +268,7 @@ export function buildFixedSizeBookPages(items: SavedRecipeItem[]): {
           }
 
           while (stepCursor < allSteps.length) {
-            const lineCost = Math.max(1, Math.ceil(allSteps[stepCursor].length / 46));
+            const lineCost = Math.max(1, Math.ceil(allSteps[stepCursor].length / 42));
             if (partSteps.length > 0 && budget < lineCost) break;
             if (budget < lineCost && (partIngs.length > 0 || partSteps.length > 0)) break;
             partSteps.push(allSteps[stepCursor]);
@@ -284,7 +297,6 @@ export function buildFixedSizeBookPages(items: SavedRecipeItem[]): {
           currentSheet.usedLines = Math.min(cap, currentSheet.usedLines + Math.max(1, actualUsed));
           partIndex += 1;
 
-          // אם נשארו עוד חלקים למתכון הזה, עוברים לעמוד הבא
           if (ingCursor < allIngs.length || stepCursor < allSteps.length) {
             advanceToNextSheet();
           }
@@ -321,7 +333,7 @@ export function buildFixedSizeBookPages(items: SavedRecipeItem[]): {
     });
   });
 
-  if (currentSheet.blocks.length > 0 || sheets.length === 0) {
+  if (currentSheet.blocks.length > 0) {
     finalizeAndPushSheet(currentSheet);
   }
 
