@@ -1,4 +1,4 @@
-import { BookPagedCategory } from '@/lib/recipeBook';
+import { BookPageSheet, TocEntry, FIXED_PAGE_CAPACITY_LINES } from '@/lib/recipeBook';
 import { parseAndScaleLine, MeasureSystem } from '@/lib/recipeEngine';
 
 function escapePdfText(text: string): string {
@@ -9,91 +9,89 @@ function escapePdfText(text: string): string {
     .replace(/[^\x20-\x7E]/g, '?');
 }
 
-function wrapLines(text: string, maxChars = 78): string[] {
-  const words = text.split(/\s+/).filter(Boolean);
-  const lines: string[] = [];
-  let current = '';
-
-  for (const w of words) {
-    const candidate = current ? current + ' ' + w : w;
-    if (candidate.length > maxChars && current) {
-      lines.push(current);
-      current = w;
-    } else {
-      current = candidate;
-    }
-  }
-  if (current) lines.push(current);
-  return lines.length > 0 ? lines : [''];
-}
-
 export function downloadStructuredRecipeBookPdf(params: {
   bookTitle: string;
   dateLabel: string;
   scopeLabel: string;
   measureSystem: MeasureSystem;
-  pagedBook: BookPagedCategory[];
+  sheets: BookPageSheet[];
+  toc: TocEntry[];
 }): void {
-  const { bookTitle, dateLabel, scopeLabel, measureSystem, pagedBook } = params;
+  const { bookTitle, dateLabel, scopeLabel, measureSystem, sheets, toc } = params;
 
-  const pages: string[][] = [];
-  const page1Lines: string[] = [
-    'PAGE 1 - COVER & TABLE OF CONTENTS',
-    'Title: ' + bookTitle,
+  const pdfPages: string[][] = [];
+
+  const tocLines: string[] = [
+    'PAGE 1 - FIXED CAPACITY (' + FIXED_PAGE_CAPACITY_LINES + ' lines/page)',
+    'Book: ' + bookTitle,
     'Scope: ' + scopeLabel + ' | Date: ' + dateLabel + ' | Units: ' + measureSystem.toUpperCase(),
     '------------------------------------------------------------------------',
   ];
 
-  for (const cat of pagedBook) {
-    page1Lines.push('Category: ' + cat.category + ' [Page ' + cat.pageNumber + ']');
-    for (const sub of cat.subGroups) {
-      page1Lines.push('  Subcategory: ' + sub.subCategory + ' [Page ' + sub.pageNumber + ']');
-      for (const pRec of sub.recipes) {
-        page1Lines.push(
-          '    - ' + pRec.recipe.title + ' (' + pRec.recipe.targetServings + ' servings) [Page ' + pRec.pageNumber + ']'
-        );
+  for (const cat of toc) {
+    tocLines.push('Category: ' + cat.category + ' [Page ' + cat.categoryPage + ']');
+    for (const sub of cat.subCategories) {
+      tocLines.push('  Subcategory: ' + sub.subCategory + ' [Page ' + sub.subPage + ']');
+      for (const r of sub.recipes) {
+        tocLines.push('    - ' + r.title + ' [Page ' + r.pageNumber + ']');
       }
     }
   }
-  pages.push(page1Lines);
+  pdfPages.push(tocLines);
 
-  for (const cat of pagedBook) {
-    for (const sub of cat.subGroups) {
-      for (const pRec of sub.recipes) {
-        const rec = pRec.recipe;
+  for (const sheet of sheets) {
+    const lines: string[] = [
+      'PAGE ' +
+        sheet.pageNumber +
+        ' | Fixed Size: ' +
+        sheet.usedLines +
+        '/' +
+        sheet.capacity +
+        ' (' +
+        sheet.fillFraction +
+        ')',
+      '------------------------------------------------------------------------',
+    ];
+
+    for (const blk of sheet.blocks) {
+      if (blk.kind === 'category') {
+        lines.push('[Category] ' + blk.title + ' (Page ' + blk.pageNumber + ')');
+      } else if (blk.kind === 'subcategory') {
+        lines.push('  [Subcategory] ' + blk.category + ' / ' + blk.title + ' (Page ' + blk.pageNumber + ')');
+      } else if (blk.kind === 'recipe-part' && blk.recipe) {
+        const rec = blk.recipe;
         const factor = rec.originalServings > 0 ? rec.targetServings / rec.originalServings : 1;
-        const pLines: string[] = [
-          'PAGE ' + pRec.pageNumber + ' | ' + cat.category + ' / ' + sub.subCategory,
-          (rec.favorite ? '[FAVORITE] ' : '') + rec.title + ' (' + rec.targetServings + ' servings)',
-          '------------------------------------------------------------------------',
-          'Ingredients:',
-        ];
-
-        const rawIngs = rec.rawIngredients.split('\n').filter((l) => l.trim());
-        for (const ingLine of rawIngs) {
-          const scaled = parseAndScaleLine(ingLine, factor, rec.dietMode, rec.convertToGrams, measureSystem).displayText;
-          for (const wrapped of wrapLines('  * ' + scaled)) {
-            pLines.push(wrapped);
+        lines.push(
+          '  Recipe: ' +
+            rec.title +
+            (blk.isContinuation ? ' (cont.)' : '') +
+            ' [' +
+            rec.targetServings +
+            ' servings]'
+        );
+        if (blk.ingredients && blk.ingredients.length > 0) {
+          for (const ing of blk.ingredients) {
+            const scaled = parseAndScaleLine(
+              ing,
+              factor,
+              rec.dietMode,
+              rec.convertToGrams,
+              measureSystem
+            ).displayText;
+            lines.push('    * ' + scaled);
           }
         }
-
-        const rawSteps = rec.rawSteps.split('\n').map((s) => s.trim()).filter(Boolean);
-        if (rawSteps.length > 0) {
-          pLines.push('');
-          pLines.push('Preparation Steps:');
-          rawSteps.forEach((st, idx) => {
-            for (const wrapped of wrapLines('  ' + (idx + 1) + '. ' + st)) {
-              pLines.push(wrapped);
-            }
-          });
+        if (blk.steps && blk.steps.length > 0) {
+          for (const st of blk.steps) {
+            lines.push('    - ' + st);
+          }
         }
-
-        pages.push(pLines);
       }
     }
+
+    pdfPages.push(lines);
   }
 
-  // בניית קובץ PDF תקני עם עמוד נפרד לכל עמוד בספר
   const objects: string[] = [];
   const addObj = (body: string) => {
     objects.push(body);
@@ -106,11 +104,11 @@ export function downloadStructuredRecipeBookPdf(params: {
 
   const pageObjIds: number[] = [];
 
-  for (let i = 0; i < pages.length; i++) {
-    const contentLines = pages[i];
-    const streamParts: string[] = ['BT', '/F1 11 Tf', '50 750 Td', '15 TL'];
+  for (let i = 0; i < pdfPages.length; i++) {
+    const contentLines = pdfPages[i];
+    const streamParts: string[] = ['BT', '/F1 10.5 Tf', '48 760 Td', '14 TL'];
 
-    contentLines.slice(0, 44).forEach((line, idx) => {
+    contentLines.slice(0, FIXED_PAGE_CAPACITY_LINES + 6).forEach((line, idx) => {
       const safe = escapePdfText(line);
       if (idx === 0) {
         streamParts.push('(' + safe + ') Tj');
