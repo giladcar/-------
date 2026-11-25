@@ -1,12 +1,75 @@
 import { BookPageSheet, TocEntry, FIXED_PAGE_CAPACITY_LINES } from '@/lib/recipeBook';
 import { parseAndScaleLine, MeasureSystem } from '@/lib/recipeEngine';
 
-function escapePdfText(text: string): string {
-  return text
-    .replace(/\\/g, '\\\\')
-    .replace(/\(/g, '\\(')
-    .replace(/\)/g, '\\)')
-    .replace(/[^\x20-\x7E]/g, '?');
+// מיפוי תווי עברית לקידוד Windows-1255 (עובד ב-PDF עם WinAnsiEncoding)
+const HEBREW_TO_CP1255: Record<number, number> = {
+  0x05d0: 0xe0, // א
+  0x05d1: 0xe1, // ב
+  0x05d2: 0xe2, // ג
+  0x05d3: 0xe3, // ד
+  0x05d4: 0xe4, // ה
+  0x05d5: 0xe5, // ו
+  0x05d6: 0xe6, // ז
+  0x05d7: 0xe7, // ח
+  0x05d8: 0xe8, // ט
+  0x05d9: 0xe9, // י
+  0x05da: 0xea, // ך
+  0x05db: 0xeb, // כ
+  0x05dc: 0xec, // ל
+  0x05dd: 0xed, // ם
+  0x05de: 0xee, // מ
+  0x05df: 0xef, // ן
+  0x05e0: 0xf0, // נ
+  0x05e1: 0xf1, // ס
+  0x05e2: 0xf2, // ע
+  0x05e3: 0xf3, // ף
+  0x05e4: 0xf4, // פ
+  0x05e5: 0xf5, // ץ
+  0x05e6: 0xf6, // צ
+  0x05e7: 0xf7, // ק
+  0x05e8: 0xf8, // ר
+  0x05e9: 0xf9, // ש
+  0x05ea: 0xfa, // ת
+};
+
+function reverseHebrewForVisualPdf(text: string): string {
+  // מחרוזות שמכילות עברית נהפכות לסדר ויזואלי עבור מנועי PDF בסיסיים
+  if (!/[\u0590-\u05FF]/.test(text)) return text;
+  const words = text.split(' ');
+  return words
+    .reverse()
+    .map((word) => {
+      if (/[\u0590-\u05FF]/.test(word)) {
+        return Array.from(word).reverse().join('');
+      }
+      return word;
+    })
+    .join(' ');
+}
+
+function encodePdfWinAnsiString(rawText: string): string {
+  const visual = reverseHebrewForVisualPdf(rawText);
+  let out = '(';
+  for (let i = 0; i < visual.length; i++) {
+    const code = visual.charCodeAt(i);
+    if (code === 40 || code === 41 || code === 92) {
+      out += '\\' + String.fromCharCode(code);
+    } else if (code >= 0x20 && code <= 0x7e) {
+      out += String.fromCharCode(code);
+    } else if (HEBREW_TO_CP1255[code] !== undefined) {
+      out += '\\' + HEBREW_TO_CP1255[code].toString(8).padStart(3, '0');
+    } else if (code === 0x2013 || code === 0x2014) {
+      out += '-';
+    } else if (code === 0x2022 || code === 0x25aa || code === 0x2605 || code === 0x2606) {
+      out += '*';
+    } else if (code === 0x2190) {
+      out += '<-';
+    } else {
+      out += ' ';
+    }
+  }
+  out += ')';
+  return out;
 }
 
 export function downloadStructuredRecipeBookPdf(params: {
@@ -22,18 +85,23 @@ export function downloadStructuredRecipeBookPdf(params: {
   const pdfPages: string[][] = [];
 
   const tocLines: string[] = [
-    'PAGE 1 - FIXED CAPACITY (' + FIXED_PAGE_CAPACITY_LINES + ' lines/page)',
-    'Book: ' + bookTitle,
-    'Scope: ' + scopeLabel + ' | Date: ' + dateLabel + ' | Units: ' + measureSystem.toUpperCase(),
+    'עמוד 1 - תוכן עניינים (גודל קבוע: ' + FIXED_PAGE_CAPACITY_LINES + ' שורות לעמוד)',
+    'שם הספר: ' + bookTitle,
+    'היקף: ' +
+      scopeLabel +
+      ' | תאריך: ' +
+      dateLabel +
+      ' | מידות: ' +
+      (measureSystem === 'us' ? 'אמריקאיות' : 'מטריות'),
     '------------------------------------------------------------------------',
   ];
 
   for (const cat of toc) {
-    tocLines.push('Category: ' + cat.category + ' [Page ' + cat.categoryPage + ']');
+    tocLines.push('קטגוריה: ' + cat.category + ' [עמוד ' + cat.categoryPage + ']');
     for (const sub of cat.subCategories) {
-      tocLines.push('  Subcategory: ' + sub.subCategory + ' [Page ' + sub.subPage + ']');
+      tocLines.push('  תת-קטגוריה: ' + sub.subCategory + ' [עמוד ' + sub.subPage + ']');
       for (const r of sub.recipes) {
-        tocLines.push('    - ' + r.title + ' [Page ' + r.pageNumber + ']');
+        tocLines.push('    - ' + r.title + ' [עמוד ' + r.pageNumber + ']');
       }
     }
   }
@@ -41,9 +109,9 @@ export function downloadStructuredRecipeBookPdf(params: {
 
   for (const sheet of sheets) {
     const lines: string[] = [
-      'PAGE ' +
+      'עמוד ' +
         sheet.pageNumber +
-        ' | Fixed Size: ' +
+        ' | גודל קבוע: ' +
         sheet.usedLines +
         '/' +
         sheet.capacity +
@@ -55,19 +123,19 @@ export function downloadStructuredRecipeBookPdf(params: {
 
     for (const blk of sheet.blocks) {
       if (blk.kind === 'category-banner') {
-        lines.push('[Category] ' + blk.title + ' (Page ' + blk.pageNumber + ')');
+        lines.push('*** קטגוריה: ' + blk.title + ' (עמוד ' + blk.pageNumber + ') ***');
       } else if (blk.kind === 'subcategory-banner') {
-        lines.push('  [Subcategory] ' + blk.category + ' / ' + blk.title + ' (Page ' + blk.pageNumber + ')');
+        lines.push('  ** תת-קטגוריה: ' + blk.category + ' <- ' + blk.title + ' (עמוד ' + blk.pageNumber + ') **');
       } else if (blk.kind === 'recipe-part' && blk.recipe) {
         const rec = blk.recipe;
         const factor = rec.originalServings > 0 ? rec.targetServings / rec.originalServings : 1;
         lines.push(
-          '  Recipe: ' +
+          '  מתכון: ' +
             rec.title +
-            (blk.isContinuation ? ' (cont.)' : '') +
+            (blk.isContinuation ? ' (המשך)' : '') +
             ' [' +
             rec.targetServings +
-            ' servings]'
+            ' מנות]'
         );
         if (blk.ingredients && blk.ingredients.length > 0) {
           for (const ing of blk.ingredients) {
@@ -100,20 +168,22 @@ export function downloadStructuredRecipeBookPdf(params: {
 
   const catalogId = addObj('');
   const pagesId = addObj('');
-  const fontId = addObj('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>');
+  const fontId = addObj(
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>'
+  );
 
   const pageObjIds: number[] = [];
 
   for (let i = 0; i < pdfPages.length; i++) {
     const contentLines = pdfPages[i];
-    const streamParts: string[] = ['BT', '/F1 10.5 Tf', '48 760 Td', '14 TL'];
+    const streamParts: string[] = ['BT', '/F1 11 Tf', '545 760 Td', '15 TL'];
 
-    contentLines.slice(0, FIXED_PAGE_CAPACITY_LINES + 6).forEach((line, idx) => {
-      const safe = escapePdfText(line);
+    contentLines.slice(0, FIXED_PAGE_CAPACITY_LINES + 8).forEach((line, idx) => {
+      const encoded = encodePdfWinAnsiString(line);
       if (idx === 0) {
-        streamParts.push('(' + safe + ') Tj');
+        streamParts.push(encoded + ' Tj');
       } else {
-        streamParts.push('T* (' + safe + ') Tj');
+        streamParts.push('T* ' + encoded + ' Tj');
       }
     });
 
