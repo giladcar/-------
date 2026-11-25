@@ -284,12 +284,12 @@ function renderPagesToJpegDataUrls(params: {
           rec.targetServings +
           ' מנות';
 
-        for (const tLine of wrapHebrewLine(ctx, titleText, colWidth)) {
+        for (const tLine of wrapHebrewLine(ctx, titleText, colWidth - 12)) {
           allItems.push({
             text: tLine,
-            font: 'bold 23px Arial, sans-serif',
+            font: 'bold 22px Arial, sans-serif',
             color: '#111827',
-            lineHeight: 29,
+            lineHeight: 28,
           });
         }
 
@@ -297,9 +297,9 @@ function renderPagesToJpegDataUrls(params: {
         if (ings.length > 0) {
           allItems.push({
             text: 'מצרכים:',
-            font: 'bold 20px Arial, sans-serif',
+            font: 'bold 19px Arial, sans-serif',
             color: '#b45309',
-            lineHeight: 26,
+            lineHeight: 25,
           });
           for (const ing of ings) {
             const scaled = parseAndScaleLine(
@@ -312,9 +312,9 @@ function renderPagesToJpegDataUrls(params: {
             for (const iLine of wrapHebrewLine(ctx, '• ' + scaled, colWidth - 24)) {
               allItems.push({
                 text: iLine,
-                font: '19px Arial, sans-serif',
+                font: '18px Arial, sans-serif',
                 color: '#1f2937',
-                lineHeight: 24,
+                lineHeight: 23,
                 indentPx: 10,
               });
             }
@@ -325,17 +325,17 @@ function renderPagesToJpegDataUrls(params: {
         if (steps.length > 0) {
           allItems.push({
             text: 'שלבי הכנה:',
-            font: 'bold 20px Arial, sans-serif',
+            font: 'bold 19px Arial, sans-serif',
             color: '#b45309',
-            lineHeight: 26,
+            lineHeight: 25,
           });
           steps.forEach((st, idx) => {
             for (const sLine of wrapHebrewLine(ctx, idx + 1 + '. ' + st, colWidth - 24)) {
               allItems.push({
                 text: sLine,
-                font: '19px Arial, sans-serif',
+                font: '18px Arial, sans-serif',
                 color: '#1f2937',
-                lineHeight: 24,
+                lineHeight: 23,
                 indentPx: 10,
               });
             }
@@ -344,18 +344,17 @@ function renderPagesToJpegDataUrls(params: {
 
         allItems.push({
           text: '',
-          font: '19px Arial, sans-serif',
+          font: '18px Arial, sans-serif',
           color: '#1f2937',
-          lineHeight: 14,
+          lineHeight: 12,
         });
       }
     }
 
     const startY = 86;
     const bottomLimit = heightPx - 82;
-    const maxColHeight = bottomLimit - startY;
 
-    // קו הפרדה אנכי עדין בין הטור הימני לטור השמאלי
+    // קו הפרדה אנכי בין הטור הימני לטור השמאלי
     const dividerX = rightEdge - colWidth - colGap / 2;
     ctx.save();
     ctx.strokeStyle = '#e5e7eb';
@@ -366,35 +365,43 @@ function renderPagesToJpegDataUrls(params: {
     ctx.stroke();
     ctx.restore();
 
-    // מילוי הטור הימני עד התחתית וגלישה מסודרת לראש הטור השמאלי עד התחתית
-    let currentX = rightColX;
-    let y = startY;
-    let movedToLeftCol = false;
+    // חלוקה ל-2 טורים: חצי ראשון בטור הימני, חצי שני בטור השמאלי
+    const splitAt = allItems.length > 14 ? Math.ceil(allItems.length / 2) : allItems.length;
 
-    for (let idx = 0; idx < allItems.length; idx++) {
-      const item = allItems[idx];
-      if (y + item.lineHeight > bottomLimit) {
-        if (!movedToLeftCol) {
-          currentX = leftColX;
-          y = startY;
-          movedToLeftCol = true;
-        } else {
-          break;
-        }
-      }
-
+    let ry = startY;
+    for (let i = 0; i < splitAt; i++) {
+      const item = allItems[i];
+      if (ry + item.lineHeight > bottomLimit) break;
       if (item.text) {
         drawAlignedLine(
           ctx,
           item.text,
-          currentX - (item.indentPx || 0),
-          y,
+          rightColX - (item.indentPx || 0),
+          ry,
           item.font,
           item.color,
           'right'
         );
       }
-      y += item.lineHeight;
+      ry += item.lineHeight;
+    }
+
+    let ly = startY;
+    for (let i = splitAt; i < allItems.length; i++) {
+      const item = allItems[i];
+      if (ly + item.lineHeight > bottomLimit) break;
+      if (item.text) {
+        drawAlignedLine(
+          ctx,
+          item.text,
+          leftColX - (item.indentPx || 0),
+          ly,
+          item.font,
+          item.color,
+          'right'
+        );
+      }
+      ly += item.lineHeight;
     }
 
     pageCanvases.push(canvas);
