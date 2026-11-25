@@ -355,23 +355,29 @@ function renderPagesToJpegDataUrls(params: {
     const bottomLimit = heightPx - 82;
     const maxColHeight = bottomLimit - startY;
 
-    // חלוקה מאוזנת בין הטור הימני לטור השמאלי למילוי שני צידי הדף
-    let totalHeight = 0;
-    for (const item of allItems) totalHeight += item.lineHeight;
+    // קו הפרדה אנכי עדין בין הטור הימני לטור השמאלי
+    const dividerX = rightEdge - colWidth - colGap / 2;
+    ctx.save();
+    ctx.strokeStyle = '#e5e7eb';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(dividerX, startY);
+    ctx.lineTo(dividerX, bottomLimit);
+    ctx.stroke();
+    ctx.restore();
 
-    const splitThreshold =
-      totalHeight > maxColHeight ? Math.ceil(totalHeight / 2) : maxColHeight;
+    // חלוקה לשני טורים כך שגם רשימות בינוניות/ארוכות ימלאו את שני צידי הדף
+    const splitIndex = allItems.length > 20 ? Math.ceil(allItems.length / 2) : allItems.length;
 
     let currentX = rightColX;
     let y = startY;
-    let colUsed = 0;
     let movedToLeftCol = false;
 
-    for (const item of allItems) {
-      if (!movedToLeftCol && (colUsed + item.lineHeight > splitThreshold || y + item.lineHeight > bottomLimit)) {
+    for (let idx = 0; idx < allItems.length; idx++) {
+      const item = allItems[idx];
+      if (!movedToLeftCol && (idx >= splitIndex || y + item.lineHeight > bottomLimit)) {
         currentX = leftColX;
         y = startY;
-        colUsed = 0;
         movedToLeftCol = true;
       }
 
@@ -391,7 +397,6 @@ function renderPagesToJpegDataUrls(params: {
         );
       }
       y += item.lineHeight;
-      colUsed += item.lineHeight;
     }
 
     pageCanvases.push(canvas);
