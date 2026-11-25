@@ -54,9 +54,9 @@ export function downloadStructuredRecipeBookPdf(params: {
     ];
 
     for (const blk of sheet.blocks) {
-      if (blk.kind === 'category') {
+      if (blk.kind === 'category-banner') {
         lines.push('[Category] ' + blk.title + ' (Page ' + blk.pageNumber + ')');
-      } else if (blk.kind === 'subcategory') {
+      } else if (blk.kind === 'subcategory-banner') {
         lines.push('  [Subcategory] ' + blk.category + ' / ' + blk.title + ' (Page ' + blk.pageNumber + ')');
       } else if (blk.kind === 'recipe-part' && blk.recipe) {
         const rec = blk.recipe;

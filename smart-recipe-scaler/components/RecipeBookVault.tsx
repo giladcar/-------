@@ -173,9 +173,9 @@ export default function RecipeBookVault({
         '\n--- עמוד ' + sheet.pageNumber + ' (' + sheet.usedLines + '/' + sheet.capacity + ') ---'
       );
       for (const blk of sheet.blocks) {
-        if (blk.kind === 'category') {
+        if (blk.kind === 'category-banner') {
           lines.push('📁 ' + blk.title + ' [עמוד ' + blk.pageNumber + ']');
-        } else if (blk.kind === 'subcategory') {
+        } else if (blk.kind === 'subcategory-banner') {
           lines.push(
             '  📂 ' + blk.category + ' ← ' + blk.title + ' [עמוד ' + blk.pageNumber + ']'
           );
