@@ -8,6 +8,7 @@ import {
   buildPagedBook,
 } from '@/lib/recipeBook';
 import { parseAndScaleLine, MeasureSystem } from '@/lib/recipeEngine';
+import { downloadStructuredRecipeBookPdf } from '@/lib/pdfBookExporter';
 
 interface RecipeBookVaultProps {
   savedRecipes: SavedRecipeItem[];
@@ -595,6 +596,7 @@ export default function RecipeBookVault({
         <section className={'p-6 rounded-2xl shadow-md border space-y-6 ' + surfaceClass}>
           {/* עמוד 1: כריכה ותוכן עניינים עם ציון מספר עמוד לכל פריט */}
           <div
+            style={{ pageBreakAfter: 'always', breakAfter: 'page' }}
             className={
               'p-6 rounded-2xl border space-y-4 ' +
               (darkMode
@@ -717,7 +719,20 @@ export default function RecipeBookVault({
               </button>
               <button
                 type="button"
-                onClick={() => window.print()}
+                onClick={() =>
+                  downloadStructuredRecipeBookPdf({
+                    bookTitle: bookTitle.trim() || 'ספר המתכונים שלי',
+                    dateLabel: generatedDateLabel,
+                    scopeLabel:
+                      exportScope === 'all'
+                        ? 'הכל'
+                        : exportScope === 'favorites'
+                        ? 'רק מועדפים'
+                        : 'רק נבחרים',
+                    measureSystem,
+                    pagedBook,
+                  })
+                }
                 className={
                   'px-3.5 py-2 rounded-xl text-xs font-bold border cursor-pointer ' +
                   (darkMode
@@ -725,7 +740,7 @@ export default function RecipeBookVault({
                     : 'bg-stone-100 border-stone-200 text-stone-800 hover:bg-stone-200')
                 }
               >
-                הדפס / שמור PDF
+                הורד קובץ PDF מסודר
               </button>
             </div>
           </div>
