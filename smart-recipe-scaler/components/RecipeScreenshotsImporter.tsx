@@ -29,26 +29,102 @@ function loadHtmlImage(file: File): Promise<{ img: HTMLImageElement; objectUrl: 
   });
 }
 
-function buildProcessedCanvas(
-  img: HTMLImageElement,
-  invertPolarity: boolean
-): HTMLCanvasElement {
-  const aspectRatio = img.height / Math.max(1, img.width);
-  const isMobileScreenshot = aspectRatio >= 1.72;
+// איתור אוטומטי של כרטיסיית הטקסט הבהירה בתוך תמונת סטורי / צילום מסך כדי לא לסרוק אוכל או גלריה מסביב
+function detectBrightTextCardBox(
+  img: HTMLImageElement
+): { x: number; y: number; w: number; h: number } | null {
+  const probeW = 240;
+  const probeH = Math.max(120, Math.round((img.height / Math.max(1, img.width)) * probeW));
+  const probe = document.createElement('canvas');
+  probe.width = probeW;
+  probe.height = probeH;
+  const pCtx = probe.getContext('2d', { willReadFrequently: true });
+  if (!pCtx) return null;
 
-  // חיתוך אוטומטי של סרגל הסטטוס העליון ורצועת הגלריה/ניווט התחתונה בצילומי מסך מהנייד
-  const cropTop = isMobileScreenshot ? Math.round(img.height * 0.055) : 0;
-  const cropBottom = isMobileScreenshot ? Math.round(img.height * 0.125) : 0;
-  const srcWidth = img.width;
-  const srcHeight = Math.max(100, img.height - cropTop - cropBottom);
+  pCtx.drawImage(img, 0, 0, probeW, probeH);
+  const { data } = pCtx.getImageData(0, 0, probeW, probeH);
 
-  // הגדלת רזולוציה ל-~2200px רוחב כדי שאותיות בעברית וניקוד/סימנים ייקראו בחדות
-  const targetWidth = Math.min(2600, Math.max(1800, Math.round(srcWidth * 2.1)));
-  const scale = targetWidth / srcWidth;
+  // דילוג על 5% עליונים (סרגל שעון/סוללה) ו-12% תחתונים (כפתורי ניווט/גלריה)
+  const yStart = Math.floor(probeH * 0.05);
+  const yEnd = Math.floor(probeH * 0.88);
+  const xStart = Math.floor(probeW * 0.06);
+  const xEnd = Math.floor(probeW * 0.94);
+
+  let minX = probeW;
+  let maxX = 0;
+  let minY = probeH;
+  let maxY = 0;
+  let brightCount = 0;
+
+  for (let y = yStart; y < yEnd; y++) {
+    let rowBright = 0;
+    let rowMinX = probeW;
+    let rowMaxX = 0;
+    for (let x = xStart; x < xEnd; x++) {
+      const idx = (y * probeW + x) * 4;
+      const r = data[idx];
+      const g = data[idx + 1];
+      const b = data[idx + 2];
+      // פיקסל לבן/קרם של תיבת טקסט (בהירות גבוהה ורוויה נמוכה)
+      const isWhiteCardPixel = r > 215 && g > 210 && b > 200 && Math.max(r, g, b) - Math.min(r, g, b) < 35;
+      if (isWhiteCardPixel) {
+        rowBright++;
+        if (x < rowMinX) rowMinX = x;
+        if (x > rowMaxX) rowMaxX = x;
+      }
+    }
+    // שורה שייכת לתיבת טקסט אם לפחות 35% מרוחבה לבן
+    if (rowBright >= (xEnd - xStart) * 0.35) {
+      brightCount += rowBright;
+      if (rowMinX < minX) minX = rowMinX;
+      if (rowMaxX > maxX) maxX = rowMaxX;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+    }
+  }
+
+  const boxW = maxX - minX;
+  const boxH = maxY - minY;
+  const totalArea = probeW * probeH;
+
+  // אם זוהתה תיבת טקסט מרכזית (בין 12% ל-82% משטח התמונה), נחתוך בדיוק אליה עם שוליים קטנים
+  if (
+    brightCount > totalArea * 0.1 &&
+    boxW > probeW * 0.4 &&
+    boxH > probeH * 0.15 &&
+    boxH < probeH * 0.82
+  ) {
+    const scaleX = img.width / probeW;
+    const scaleY = img.height / probeH;
+    const padX = Math.round(img.width * 0.02);
+    const padY = Math.round(img.height * 0.015);
+
+    const cropX = Math.max(0, Math.floor(minX * scaleX) - padX);
+    const cropY = Math.max(0, Math.floor(minY * scaleY) - padY);
+    const cropW = Math.min(img.width - cropX, Math.ceil(boxW * scaleX) + padX * 2);
+    const cropH = Math.min(img.height - cropY, Math.ceil(boxH * scaleY) + padY * 2);
+
+    return { x: cropX, y: cropY, w: cropW, h: cropH };
+  }
+
+  return null;
+}
+
+function buildCleanOcrCanvas(img: HTMLImageElement, invertPolarity: boolean): HTMLCanvasElement {
+  const cardBox = !invertPolarity ? detectBrightTextCardBox(img) : null;
+
+  const srcX = cardBox ? cardBox.x : 0;
+  const srcY = cardBox ? cardBox.y : 0;
+  const srcW = cardBox ? cardBox.w : img.width;
+  const srcH = cardBox ? cardBox.h : img.height;
+
+  // הגדלה איכותית ל-~2000px רוחב לקריאה מדויקת של אותיות בעברית
+  const targetW = Math.min(2400, Math.max(1600, Math.round(srcW * 2)));
+  const scale = targetW / Math.max(1, srcW);
 
   const canvas = document.createElement('canvas');
-  canvas.width = Math.round(srcWidth * scale);
-  canvas.height = Math.round(srcHeight * scale);
+  canvas.width = Math.round(srcW * scale);
+  canvas.height = Math.round(srcH * scale);
 
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
   if (!ctx) return canvas;
@@ -57,46 +133,62 @@ function buildProcessedCanvas(
   ctx.imageSmoothingQuality = 'high';
   ctx.fillStyle = '#ffffff';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
-  ctx.drawImage(
-    img,
-    0,
-    cropTop,
-    srcWidth,
-    srcHeight,
-    0,
-    0,
-    canvas.width,
-    canvas.height
-  );
+  ctx.drawImage(img, srcX, srcY, srcW, srcH, 0, 0, canvas.width, canvas.height);
 
-  // עיבוד פיקסלים דטרמיניסטי: ניגודיות חדה, ניקוי רקע צבעוני והתאמת מצב בהיר/כהה
+  // חישוב סף Otsu אוטומטי להפרדה נקייה בין טקסט לרקע בלי לאכול אותיות דקות
   const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
   const data = imageData.data;
+  const histogram = new Array<number>(256).fill(0);
+  const totalPixels = canvas.width * canvas.height;
 
   for (let i = 0; i < data.length; i += 4) {
-    const r = data[i];
-    const g = data[i + 1];
-    const b = data[i + 2];
+    let lum = Math.round(0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2]);
+    if (invertPolarity) lum = 255 - lum;
+    histogram[lum]++;
+  }
 
-    // חישוב בהירות (Luminance)
-    let lum = 0.299 * r + 0.587 * g + 0.114 * b;
-    if (invertPolarity) {
-      lum = 255 - lum;
+  let sum = 0;
+  for (let t = 0; t < 256; t++) sum += t * histogram[t];
+
+  let sumB = 0;
+  let wB = 0;
+  let maxVar = 0;
+  let threshold = 155;
+
+  for (let t = 0; t < 256; t++) {
+    wB += histogram[t];
+    if (wB === 0) continue;
+    const wF = totalPixels - wB;
+    if (wF === 0) break;
+    sumB += t * histogram[t];
+    const mB = sumB / wB;
+    const mF = (sum - sumB) / wF;
+    const betweenVar = wB * wF * (mB - mF) * (mB - mF);
+    if (betweenVar > maxVar) {
+      maxVar = betweenVar;
+      threshold = t;
     }
+  }
 
-    // חידוד ניגודיות (S-curve) כדי להפריד אותיות כהות מרקע בהיר ולשטוף רעשי תמונה
-    let enhanced: number;
-    if (lum < 115) {
-      enhanced = Math.max(0, Math.round(lum * 0.45));
-    } else if (lum > 185) {
-      enhanced = 255;
+  const lowCut = Math.max(60, threshold - 38);
+  const highCut = Math.min(245, threshold + 28);
+
+  for (let i = 0; i < data.length; i += 4) {
+    let lum = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+    if (invertPolarity) lum = 255 - lum;
+
+    let val: number;
+    if (lum <= lowCut) {
+      val = 0;
+    } else if (lum >= highCut) {
+      val = 255;
     } else {
-      enhanced = Math.min(255, Math.max(0, Math.round((lum - 115) * (255 / 70))));
+      val = Math.round(((lum - lowCut) / Math.max(1, highCut - lowCut)) * 255);
     }
 
-    data[i] = enhanced;
-    data[i + 1] = enhanced;
-    data[i + 2] = enhanced;
+    data[i] = val;
+    data[i + 1] = val;
+    data[i + 2] = val;
     data[i + 3] = 255;
   }
 
@@ -104,14 +196,14 @@ function buildProcessedCanvas(
   return canvas;
 }
 
-function scoreHebrewReadability(text: string): number {
+function scoreHebrewQuality(text: string): number {
   const cleaned = cleanOcrNoise(text);
   const hebrewWords = cleaned.match(/[א-ת]{2,}/g) || [];
-  const recipeKeywords =
+  const recipeHits =
     cleaned.match(
-      /(?:כוס|כוסות|כף|כפות|כפית|כפיות|גרם|קילו|בצל|שמן|מלח|פלפל|מים|תנור|לערבב|להוסיף|לטגן|לבשל|לאפות|דקות|שעה|אפשר)/g
+      /(?:כוס|כוסות|כף|כפות|כפית|כפיות|גרם|קילו|בצל|בצלים|תפוחי|פרגיות|שמן|מלח|פלפל|מים|תנור|לערבב|להוסיף|לטגן|לבשל|לאפות|דקות|שעה|אפשר|לוודא)/g
     ) || [];
-  return hebrewWords.length * 2 + recipeKeywords.length * 8;
+  return hebrewWords.length * 2 + recipeHits.length * 10;
 }
 
 export default function RecipeScreenshotsImporter({
@@ -231,7 +323,7 @@ export default function RecipeScreenshotsImporter({
     setScanning(true);
     setOcrError(null);
     setProgressPct(8);
-    setProgressText('מכין מנוע קריאה חד בעברית ובאנגלית...');
+    setProgressText('מכין מנוע זיהוי טקסט חכם בעברית ובאנגלית...');
 
     let worker: Awaited<ReturnType<typeof createWorker>> | null = null;
     try {
@@ -264,23 +356,19 @@ export default function RecipeScreenshotsImporter({
 
         const { img, objectUrl } = await loadHtmlImage(entry.slot.file);
         try {
-          // סריקה 1: טקסט כהה על רקע בהיר (סטורי / בלוג / תיבת טקסט)
-          const lightCanvas = buildProcessedCanvas(img, false);
+          const lightCanvas = buildCleanOcrCanvas(img, false);
           const resLight = await worker.recognize(lightCanvas);
           const textLight = resLight?.data?.text || '';
-          const scoreLight = scoreHebrewReadability(textLight);
+          const scoreLight = scoreHebrewQuality(textLight);
 
           let bestText = textLight;
 
-          // אם הציון נמוך (למשל צילום מסך במצב כהה Dark Mode או טקסט לבן על רקע כהה), נריץ סריקה הפוכה
-          if (scoreLight < 35) {
-            setProgressText(
-              'מבצע סריקת ניגודיות הפוכה ל-' + SLOT_LABELS[entry.idx] + '...'
-            );
-            const darkCanvas = buildProcessedCanvas(img, true);
+          if (scoreLight < 45) {
+            setProgressText('מנסה קריאה הפוכה (מצב כהה) עבור ' + SLOT_LABELS[entry.idx] + '...');
+            const darkCanvas = buildCleanOcrCanvas(img, true);
             const resDark = await worker.recognize(darkCanvas);
             const textDark = resDark?.data?.text || '';
-            const scoreDark = scoreHebrewReadability(textDark);
+            const scoreDark = scoreHebrewQuality(textDark);
             if (scoreDark > scoreLight) {
               bestText = textDark;
             }
@@ -331,7 +419,7 @@ export default function RecipeScreenshotsImporter({
             סריקת צילומי מסך / סטורי למתכון (עד 3 תמונות ברצף — ללא AI)
           </h3>
           <p className={'text-[11px] ' + (darkMode ? 'text-slate-400' : 'text-stone-500')}>
-            מזהה אוטומטית מצרכים, שלבי הכנה והערות/החלפות מתוך כל צילום מסך (כולל סטורי ומצב כהה)
+            מזהה אוטומטית את תיבת המתכון, מחלץ חומרים ושלבים ומפריד הערות/טיפים לתיבה נפרדת
           </p>
         </div>
 
