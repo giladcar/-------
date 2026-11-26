@@ -2,6 +2,7 @@
 
 import React, { useState, useRef } from 'react';
 import { createWorker } from 'tesseract.js';
+import { cleanOcrNoise } from '@/lib/smartRecipeParser';
 
 interface ScreenshotSlot {
   file: File;
@@ -15,39 +16,102 @@ interface RecipeScreenshotsImporterProps {
 
 const SLOT_LABELS = ['צילום 1 (התחלה)', 'צילום 2 (המשך)', 'צילום 3 (סוף)'];
 
-async function preprocessImageForOcr(file: File): Promise<HTMLCanvasElement> {
+function loadHtmlImage(file: File): Promise<{ img: HTMLImageElement; objectUrl: string }> {
   return new Promise((resolve, reject) => {
     const img = new Image();
     const objectUrl = URL.createObjectURL(file);
-    img.onload = () => {
-      try {
-        const scale = img.width < 1200 ? 1.5 : 1;
-        const canvas = document.createElement('canvas');
-        canvas.width = Math.round(img.width * scale);
-        canvas.height = Math.round(img.height * scale);
-        const ctx = canvas.getContext('2d');
-        if (!ctx) {
-          URL.revokeObjectURL(objectUrl);
-          resolve(canvas);
-          return;
-        }
-        ctx.fillStyle = '#ffffff';
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
-        ctx.filter = 'grayscale(100%) contrast(135%) brightness(105%)';
-        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-        URL.revokeObjectURL(objectUrl);
-        resolve(canvas);
-      } catch (err) {
-        URL.revokeObjectURL(objectUrl);
-        reject(err);
-      }
-    };
+    img.onload = () => resolve({ img, objectUrl });
     img.onerror = (err) => {
       URL.revokeObjectURL(objectUrl);
       reject(err);
     };
     img.src = objectUrl;
   });
+}
+
+function buildProcessedCanvas(
+  img: HTMLImageElement,
+  invertPolarity: boolean
+): HTMLCanvasElement {
+  const aspectRatio = img.height / Math.max(1, img.width);
+  const isMobileScreenshot = aspectRatio >= 1.72;
+
+  // חיתוך אוטומטי של סרגל הסטטוס העליון ורצועת הגלריה/ניווט התחתונה בצילומי מסך מהנייד
+  const cropTop = isMobileScreenshot ? Math.round(img.height * 0.055) : 0;
+  const cropBottom = isMobileScreenshot ? Math.round(img.height * 0.125) : 0;
+  const srcWidth = img.width;
+  const srcHeight = Math.max(100, img.height - cropTop - cropBottom);
+
+  // הגדלת רזולוציה ל-~2200px רוחב כדי שאותיות בעברית וניקוד/סימנים ייקראו בחדות
+  const targetWidth = Math.min(2600, Math.max(1800, Math.round(srcWidth * 2.1)));
+  const scale = targetWidth / srcWidth;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.round(srcWidth * scale);
+  canvas.height = Math.round(srcHeight * scale);
+
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) return canvas;
+
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(
+    img,
+    0,
+    cropTop,
+    srcWidth,
+    srcHeight,
+    0,
+    0,
+    canvas.width,
+    canvas.height
+  );
+
+  // עיבוד פיקסלים דטרמיניסטי: ניגודיות חדה, ניקוי רקע צבעוני והתאמת מצב בהיר/כהה
+  const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  const data = imageData.data;
+
+  for (let i = 0; i < data.length; i += 4) {
+    const r = data[i];
+    const g = data[i + 1];
+    const b = data[i + 2];
+
+    // חישוב בהירות (Luminance)
+    let lum = 0.299 * r + 0.587 * g + 0.114 * b;
+    if (invertPolarity) {
+      lum = 255 - lum;
+    }
+
+    // חידוד ניגודיות (S-curve) כדי להפריד אותיות כהות מרקע בהיר ולשטוף רעשי תמונה
+    let enhanced: number;
+    if (lum < 115) {
+      enhanced = Math.max(0, Math.round(lum * 0.45));
+    } else if (lum > 185) {
+      enhanced = 255;
+    } else {
+      enhanced = Math.min(255, Math.max(0, Math.round((lum - 115) * (255 / 70))));
+    }
+
+    data[i] = enhanced;
+    data[i + 1] = enhanced;
+    data[i + 2] = enhanced;
+    data[i + 3] = 255;
+  }
+
+  ctx.putImageData(imageData, 0, 0);
+  return canvas;
+}
+
+function scoreHebrewReadability(text: string): number {
+  const cleaned = cleanOcrNoise(text);
+  const hebrewWords = cleaned.match(/[א-ת]{2,}/g) || [];
+  const recipeKeywords =
+    cleaned.match(
+      /(?:כוס|כוסות|כף|כפות|כפית|כפיות|גרם|קילו|בצל|שמן|מלח|פלפל|מים|תנור|לערבב|להוסיף|לטגן|לבשל|לאפות|דקות|שעה|אפשר)/g
+    ) || [];
+  return hebrewWords.length * 2 + recipeKeywords.length * 8;
 }
 
 export default function RecipeScreenshotsImporter({
@@ -166,8 +230,8 @@ export default function RecipeScreenshotsImporter({
 
     setScanning(true);
     setOcrError(null);
-    setProgressPct(5);
-    setProgressText('מכין מנוע קריאת טקסט בעברית ובאנגלית...');
+    setProgressPct(8);
+    setProgressText('מכין מנוע קריאה חד בעברית ובאנגלית...');
 
     let worker: Awaited<ReturnType<typeof createWorker>> | null = null;
     try {
@@ -179,17 +243,54 @@ export default function RecipeScreenshotsImporter({
         },
       });
 
+      await worker.setParameters({
+        preserve_interword_spaces: '1',
+      });
+
       const extractedParts: string[] = [];
+
       for (let i = 0; i < activeEntries.length; i++) {
         const entry = activeEntries[i];
-        setProgressPct(0);
+        setProgressPct(10);
         setProgressText(
-          'סורק ' + SLOT_LABELS[entry.idx] + ' (' + (i + 1) + ' מתוך ' + activeEntries.length + ')...'
+          'סורק ' +
+            SLOT_LABELS[entry.idx] +
+            ' (' +
+            (i + 1) +
+            ' מתוך ' +
+            activeEntries.length +
+            ')...'
         );
-        const canvas = await preprocessImageForOcr(entry.slot.file);
-        const result = await worker.recognize(canvas);
-        const text = (result?.data?.text || '').trim();
-        if (text) extractedParts.push(text);
+
+        const { img, objectUrl } = await loadHtmlImage(entry.slot.file);
+        try {
+          // סריקה 1: טקסט כהה על רקע בהיר (סטורי / בלוג / תיבת טקסט)
+          const lightCanvas = buildProcessedCanvas(img, false);
+          const resLight = await worker.recognize(lightCanvas);
+          const textLight = resLight?.data?.text || '';
+          const scoreLight = scoreHebrewReadability(textLight);
+
+          let bestText = textLight;
+
+          // אם הציון נמוך (למשל צילום מסך במצב כהה Dark Mode או טקסט לבן על רקע כהה), נריץ סריקה הפוכה
+          if (scoreLight < 35) {
+            setProgressText(
+              'מבצע סריקת ניגודיות הפוכה ל-' + SLOT_LABELS[entry.idx] + '...'
+            );
+            const darkCanvas = buildProcessedCanvas(img, true);
+            const resDark = await worker.recognize(darkCanvas);
+            const textDark = resDark?.data?.text || '';
+            const scoreDark = scoreHebrewReadability(textDark);
+            if (scoreDark > scoreLight) {
+              bestText = textDark;
+            }
+          }
+
+          const cleaned = cleanOcrNoise(bestText);
+          if (cleaned) extractedParts.push(cleaned);
+        } finally {
+          URL.revokeObjectURL(objectUrl);
+        }
       }
 
       await worker.terminate();
@@ -227,10 +328,10 @@ export default function RecipeScreenshotsImporter({
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
           <h3 className="text-xs font-bold">
-            סריקת צילומי מסך למתכון ארוך (עד 3 תמונות ברצף לאותו מתכון — ללא AI)
+            סריקת צילומי מסך / סטורי למתכון (עד 3 תמונות ברצף — ללא AI)
           </h3>
           <p className={'text-[11px] ' + (darkMode ? 'text-slate-400' : 'text-stone-500')}>
-            צלם את המתכון ב-1 עד 3 חלקים (התחלה, אמצע, סוף) או הדבק כאן צילום מסך (Ctrl+V)
+            מזהה אוטומטית מצרכים, שלבי הכנה והערות/החלפות מתוך כל צילום מסך (כולל סטורי ומצב כהה)
           </p>
         </div>
 
@@ -352,7 +453,7 @@ export default function RecipeScreenshotsImporter({
         >
           {scanning
             ? 'סורק תמונות... (' + progressPct + '%)'
-            : 'חלץ מתכון מ-' + (filledCount || 3) + ' התמונות (OCR)'}
+            : 'חלץ מתכון והערות מ-' + (filledCount || 3) + ' התמונות (OCR)'}
         </button>
 
         {progressText && !ocrError && (

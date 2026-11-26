@@ -19,6 +19,7 @@ import {
 } from '@/lib/recipeBook';
 import RecipeBookVault from '@/components/RecipeBookVault';
 import RecipeScreenshotsImporter from '@/components/RecipeScreenshotsImporter';
+import { parseRecipeAndNotes } from '@/lib/smartRecipeParser';
 import { ConversionUnit, convertIngredientLine } from '@/lib/unitConverter';
 import { GlobalUnitBar, IngredientUnitSelect } from '@/components/UnitConversionControls';
 
@@ -147,6 +148,7 @@ export default function SmartRecipeScalerPage() {
 
   const [rawIngredients, setRawIngredients] = useState<string>(SAMPLE_RECIPE);
   const [rawSteps, setRawSteps] = useState<string>(SAMPLE_STEPS);
+  const [rawNotes, setRawNotes] = useState<string>('');
   const [originalServings, setOriginalServings] = useState<number>(4);
   const [targetServings, setTargetServings] = useState<number>(6);
   const [dietMode, setDietMode] = useState<DietMode>('none');
@@ -500,7 +502,19 @@ export default function SmartRecipeScalerPage() {
       });
   }, [rawSteps, tempUnit]);
 
-  const applyExtractedData = (ingredients: string[], steps: string[], label: string) => {
+  const parsedNotes = useMemo(() => {
+    return rawNotes
+      .split('\n')
+      .map((n) => n.trim())
+      .filter(Boolean);
+  }, [rawNotes]);
+
+  const applyExtractedData = (
+    ingredients: string[],
+    steps: string[],
+    label: string,
+    notes: string[] = []
+  ) => {
     if (ingredients.length > 0) {
       setRawIngredients(ingredients.join('\n'));
     }
@@ -516,8 +530,8 @@ export default function SmartRecipeScalerPage() {
   };
 
   const handleExtractFromLongText = () => {
-    const res = extractRecipeFromText(longTextInput);
-    applyExtractedData(res.ingredients, res.steps, 'חילוץ מטקסט');
+    const res = parseRecipeAndNotes(longTextInput);
+    applyExtractedData(res.ingredients, res.steps, 'חילוץ מטקסט', res.notes);
   };
 
   const handleExtractFromUrl = async () => {
@@ -1113,11 +1127,12 @@ export default function SmartRecipeScalerPage() {
                       darkMode={darkMode}
                       onExtractedCombinedText={(combinedText, imageCount) => {
                         setLongTextInput(combinedText);
-                        const res = extractRecipeFromText(combinedText);
+                        const res = parseRecipeAndNotes(combinedText);
                         applyExtractedData(
                           res.ingredients,
                           res.steps,
-                          'סריקת OCR מ-' + imageCount + ' תמונות'
+                          'סריקת OCR מ-' + imageCount + ' תמונות',
+                          res.notes
                         );
                       }}
                     />
@@ -1383,6 +1398,19 @@ export default function SmartRecipeScalerPage() {
                       className={'w-full p-3 border rounded-xl text-sm focus:outline-none ' + inputClass}
                     />
                   </div>
+
+                  <div>
+                    <h2 className="font-bold text-lg mb-2">
+                      3. הערות, טיפים והחלפות (מהמתכון או אישיות)
+                    </h2>
+                    <textarea
+                      rows={3}
+                      value={rawNotes}
+                      onChange={(e) => setRawNotes(e.target.value)}
+                      placeholder="לדוגמה: אפשר להוסיף מים לפי הצורך / אני שמתי במקום חמאה שמן קוקוס..."
+                      className={'w-full p-3 border rounded-xl text-sm focus:outline-none ' + inputClass}
+                    />
+                  </div>
                 </section>
               )}
 
@@ -1617,6 +1645,26 @@ export default function SmartRecipeScalerPage() {
                         );
                       })}
                     </ol>
+                  </div>
+                )}
+
+                {parsedNotes.length > 0 && (
+                  <div
+                    className={
+                      'p-4 rounded-xl border space-y-2 ' +
+                      (darkMode
+                        ? 'bg-amber-950/30 border-amber-500/40 text-amber-100'
+                        : 'bg-amber-50/80 border-amber-300 text-amber-950')
+                    }
+                  >
+                    <h3 className="font-bold text-sm flex items-center gap-1.5">
+                      <span>💡 הערות, טיפים והחלפות מהמתכון</span>
+                    </h3>
+                    <ul className="space-y-1.5 text-xs leading-relaxed list-disc pr-5">
+                      {parsedNotes.map((note, i) => (
+                        <li key={'note-' + i}>{note}</li>
+                      ))}
+                    </ul>
                   </div>
                 )}
               </section>
