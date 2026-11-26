@@ -18,6 +18,7 @@ import {
   persistSavedRecipes,
 } from '@/lib/recipeBook';
 import RecipeBookVault from '@/components/RecipeBookVault';
+import RecipeScreenshotsImporter from '@/components/RecipeScreenshotsImporter';
 import { ConversionUnit, convertIngredientLine } from '@/lib/unitConverter';
 import { GlobalUnitBar, IngredientUnitSelect } from '@/components/UnitConversionControls';
 
@@ -1107,6 +1108,19 @@ export default function SmartRecipeScalerPage() {
                         {importing ? 'מחלץ קישור...' : 'חלץ מקישור'}
                       </button>
                     </div>
+
+                    <RecipeScreenshotsImporter
+                      darkMode={darkMode}
+                      onExtractedCombinedText={(combinedText, imageCount) => {
+                        setLongTextInput(combinedText);
+                        const res = extractRecipeFromText(combinedText);
+                        applyExtractedData(
+                          res.ingredients,
+                          res.steps,
+                          'סריקת OCR מ-' + imageCount + ' תמונות'
+                        );
+                      }}
+                    />
 
                     <div className="space-y-2">
                       <label className={mutedTextClass + ' block text-xs font-semibold'}>

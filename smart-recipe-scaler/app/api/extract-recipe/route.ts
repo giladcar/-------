@@ -1,6 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { extractRecipeFromText } from '@/lib/recipeEngine';
 
+interface ExtractionResult {
+  ingredients: string[];
+  steps: string[];
+  sourceMethod: string;
+}
+
 function decodeHtmlEntities(str: string): string {
   return str
     .replace(/&amp;/g, '&')
@@ -13,14 +19,21 @@ function decodeHtmlEntities(str: string): string {
     .replace(/&#x([0-9a-f]+);/gi, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
 }
 
+function cleanTagText(htmlSnippet: string): string {
+  return decodeHtmlEntities(htmlSnippet.replace(/<[^>]+>/g, ' '))
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 function stripTagsToText(html: string): string {
-  const withoutScripts = html
+  const withoutNoise = html
     .replace(/<script[\s\S]*?<\/script>/gi, ' ')
     .replace(/<style[\s\S]*?<\/style>/gi, ' ')
     .replace(/<nav[\s\S]*?<\/nav>/gi, ' ')
-    .replace(/<footer[\s\S]*?<\/footer>/gi, ' ');
+    .replace(/<footer[\s\S]*?<\/footer>/gi, ' ')
+    .replace(/<aside[\s\S]*?<\/aside>/gi, ' ');
 
-  const withBreaks = withoutScripts.replace(
+  const withBreaks = withoutNoise.replace(
     /<\/?(p|div|br|li|ul|ol|h1|h2|h3|h4|h5|h6|tr|section|article)[^>]*>/gi,
     '\n'
   );
@@ -33,8 +46,11 @@ function flattenUnknown(val: unknown): unknown[] {
   if (Array.isArray(val)) return val.flatMap(flattenUnknown);
   if (typeof val === 'object') {
     const obj = val as Record<string, unknown>;
-    if (Array.isArray(obj['@graph'])) return flattenUnknown(obj['@graph']);
-    return [obj];
+    const nested: unknown[] = [obj];
+    if (Array.isArray(obj['@graph'])) nested.push(...flattenUnknown(obj['@graph']));
+    if (obj.mainEntity) nested.push(...flattenUnknown(obj.mainEntity));
+    if (obj.mainEntityOfPage) nested.push(...flattenUnknown(obj.mainEntityOfPage));
+    return nested;
   }
   return [];
 }
@@ -44,9 +60,7 @@ function extractStepsFromSchema(rawInstructions: unknown): string[] {
   const walk = (item: unknown) => {
     if (!item) return;
     if (typeof item === 'string') {
-      const cleaned = decodeHtmlEntities(item.replace(/<[^>]+>/g, ' '))
-        .replace(/\s+/g, ' ')
-        .trim();
+      const cleaned = cleanTagText(item);
       if (cleaned) steps.push(cleaned);
       return;
     }
@@ -72,26 +86,58 @@ function isChallengeOrBlockedHtml(html: string): boolean {
     lower.includes('cf-browser-verification') ||
     lower.includes('just a moment...') ||
     lower.includes('enable javascript and cookies to continue') ||
-    lower.includes('access denied') ||
-    lower.includes('attention required! | cloudflare')
+    lower.includes('attention required! | cloudflare') ||
+    (lower.includes('access denied') && html.length < 4000)
   );
 }
 
-function extractFromHtmlContent(html: string): {
-  ingredients: string[];
-  steps: string[];
-  sourceMethod: 'json-ld' | 'html-fallback';
-} | null {
-  if (isChallengeOrBlockedHtml(html)) return null;
+function extractMicrodataAndPlugins(html: string): { ingredients: string[]; steps: string[] } | null {
+  const ingSet = new Set<string>();
+  const stepSet = new Set<string>();
 
-  // ניסיון ראשון: חילוץ נתונים מובנים Schema.org JSON-LD
-  const jsonLdMatches = [
-    ...html.matchAll(/<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi),
+  const ingPatterns = [
+    /<[^>]+itemprop=["'](?:recipeIngredient|ingredients)["'][^>]*>([\s\S]*?)<\/[a-z0-9]+>/gi,
+    /<li[^>]+class=["'][^"']*(?:wprm-recipe-ingredient|tasty-recipes-ingredient|mv-create-ingredient|recipe-ingredient)[^"']*["'][^>]*>([\s\S]*?)<\/li>/gi,
   ];
 
-  for (const match of jsonLdMatches) {
+  for (const regex of ingPatterns) {
+    let m: RegExpExecArray | null;
+    while ((m = regex.exec(html)) !== null) {
+      const txt = cleanTagText(m[1]).replace(/^[•\-*▪▫]+\s*/, '').trim();
+      if (txt.length >= 2 && txt.length <= 220) ingSet.add(txt);
+    }
+  }
+
+  const stepPatterns = [
+    /<[^>]+itemprop=["'](?:recipeInstructions|step)["'][^>]*>([\s\S]*?)<\/[a-z0-9]+>/gi,
+    /<li[^>]+class=["'][^"']*(?:wprm-recipe-instruction|tasty-recipes-instruction|mv-create-instruction|recipe-step)[^"']*["'][^>]*>([\s\S]*?)<\/li>/gi,
+  ];
+
+  for (const regex of stepPatterns) {
+    let m: RegExpExecArray | null;
+    while ((m = regex.exec(html)) !== null) {
+      const txt = cleanTagText(m[1]).replace(/^\d+[.)]\s*/, '').trim();
+      if (txt.length >= 5 && txt.length <= 600) stepSet.add(txt);
+    }
+  }
+
+  const ingredients = Array.from(ingSet);
+  const steps = Array.from(stepSet);
+  return ingredients.length >= 2 ? { ingredients, steps } : null;
+}
+
+function extractFromHtmlContent(html: string): ExtractionResult | null {
+  if (isChallengeOrBlockedHtml(html)) return null;
+
+  const jsonLdRegex = /<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
+  let match: RegExpExecArray | null;
+  while ((match = jsonLdRegex.exec(html)) !== null) {
     try {
-      const rawJson = match[1].replace(/^\s*<!--/, '').replace(/-->\s*$/, '').trim();
+      const rawJson = match[1]
+        .replace(/^\s*<!--/, '')
+        .replace(/-->\s*$/, '')
+        .replace(/,\s*([}\]])/g, '$1')
+        .trim();
       const parsed = JSON.parse(rawJson);
       const candidates = flattenUnknown(parsed);
       const recipeObj = candidates.find((c) => {
@@ -106,28 +152,29 @@ function extractFromHtmlContent(html: string): {
 
       if (recipeObj) {
         const rawIng = Array.isArray(recipeObj.recipeIngredient)
-          ? recipeObj.recipeIngredient
-              .map((x) => decodeHtmlEntities(String(x).replace(/<[^>]+>/g, ' ')).trim())
-              .filter(Boolean)
+          ? recipeObj.recipeIngredient.map((x) => cleanTagText(String(x))).filter(Boolean)
+          : Array.isArray(recipeObj.ingredients)
+          ? recipeObj.ingredients.map((x) => cleanTagText(String(x))).filter(Boolean)
           : [];
         const rawSteps = extractStepsFromSchema(recipeObj.recipeInstructions);
 
         if (rawIng.length >= 2 || (rawIng.length > 0 && rawSteps.length > 0)) {
-          return {
-            ingredients: rawIng,
-            steps: rawSteps,
-            sourceMethod: 'json-ld',
-          };
+          return { ingredients: rawIng, steps: rawSteps, sourceMethod: 'json-ld' };
         }
       }
-    } catch {
-      // ממשיכים לבלוק ה-JSON-LD הבא
-    }
+    } catch {}
   }
 
-  // ניסיון שני: חילוץ מתוך הטקסט הנקי של העמוד
-  const plainText = stripTagsToText(html);
-  const extracted = extractRecipeFromText(plainText);
+  const microdata = extractMicrodataAndPlugins(html);
+  if (microdata) {
+    return {
+      ingredients: microdata.ingredients,
+      steps: microdata.steps,
+      sourceMethod: 'microdata-wprm',
+    };
+  }
+
+  const extracted = extractRecipeFromText(stripTagsToText(html));
   if (extracted.ingredients.length >= 2) {
     return {
       ingredients: extracted.ingredients,
@@ -139,77 +186,122 @@ function extractFromHtmlContent(html: string): {
   return null;
 }
 
-async function fetchWithTimeout(
-  url: string,
-  headers: Record<string, string>,
-  timeoutMs = 9500
-): Promise<Response> {
+function extractFromMarkdownSections(markdown: string): { ingredients: string[]; steps: string[] } {
+  const lines = markdown
+    .split('\n')
+    .map((l) => l.replace(/!\[[^\]]*\]\([^)]+\)/g, '').replace(/\[([^\]]+)\]\([^)]+\)/g, '$1').trim())
+    .filter(Boolean);
+
+  let section: 'none' | 'ing' | 'steps' = 'none';
+  const ingredients: string[] = [];
+  const steps: string[] = [];
+
+  for (const rawLine of lines) {
+    const cleanHeader = rawLine.replace(/^[#*>-]+\s*/, '').replace(/:$/, '').trim();
+    if (rawLine.length <= 45 && /^(?:מצרכים|רכיבים|חומרים|ingredients)/i.test(cleanHeader)) {
+      section = 'ing';
+      continue;
+    }
+    if (rawLine.length <= 45 && /^(?:אופן ההכנה|שלבי הכנה|הוראות הכנה|הכנה|instructions|directions|method)/i.test(cleanHeader)) {
+      section = 'steps';
+      continue;
+    }
+    if (/^#{1,3}\s+/.test(rawLine) && section !== 'none') {
+      section = 'none';
+      continue;
+    }
+
+    if (section === 'ing') {
+      const item = rawLine.replace(/^[•\-*▪▫]\s*/, '').trim();
+      if (item.length >= 2 && item.length <= 160 && !item.startsWith('http')) ingredients.push(item);
+    } else if (section === 'steps') {
+      const step = rawLine.replace(/^(?:\d+[.)]|[•\-*])\s*/, '').trim();
+      if (step.length >= 8 && step.length <= 600 && !step.startsWith('http')) steps.push(step);
+    }
+  }
+
+  return { ingredients, steps };
+}
+
+async function fetchWithTimeout(url: string, headers: Record<string, string>, timeoutMs = 8500): Promise<Response> {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    return await fetch(url, {
-      signal: controller.signal,
-      headers,
-      redirect: 'follow',
-    });
+    return await fetch(url, { signal: controller.signal, headers, redirect: 'follow' });
   } finally {
     clearTimeout(timeoutId);
   }
 }
 
-function buildBrowserHeaders(targetUrl: string): Record<string, string> {
-  let origin = '';
-  try {
-    origin = new URL(targetUrl).origin;
-  } catch {
-    origin = targetUrl;
-  }
-  return {
-    'User-Agent':
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-    Accept:
-      'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-    'Accept-Language': 'he-IL,he;q=0.9,en-US;q=0.8,en;q=0.7',
-    Referer: origin + '/',
-    'Upgrade-Insecure-Requests': '1',
-    'Sec-Fetch-Dest': 'document',
-    'Sec-Fetch-Mode': 'navigate',
-    'Sec-Fetch-Site': 'same-origin',
-    'Cache-Control': 'no-cache',
-  };
+function firstNonNull<T>(promises: Array<Promise<T | null>>): Promise<T | null> {
+  return new Promise((resolve) => {
+    let pending = promises.length;
+    if (pending === 0) return resolve(null);
+    for (const p of promises) {
+      p.then((val) => {
+        if (val !== null) resolve(val);
+        else if (--pending === 0) resolve(null);
+      }).catch(() => {
+        if (--pending === 0) resolve(null);
+      });
+    }
+  });
 }
 
-// שכבה 2: רינדור מלא לאתרים שחוסמים בוטים או טוענים תוכן דרך JavaScript
-async function fetchViaRenderedReader(targetUrl: string): Promise<{
-  ingredients: string[];
-  steps: string[];
-  sourceMethod: 'reader-fallback';
-} | null> {
+async function tier1DesktopGoogleReferer(targetUrl: string): Promise<ExtractionResult | null> {
   try {
-    const readerUrl = 'https://r.jina.ai/' + targetUrl;
-    const res = await fetchWithTimeout(
-      readerUrl,
-      {
-        Accept: 'text/plain',
-        'X-Return-Format': 'markdown',
-      },
-      12000
-    );
+    const res = await fetchWithTimeout(targetUrl, {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+      Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      'Accept-Language': 'he-IL,he;q=0.9,en-US;q=0.8,en;q=0.7',
+      Referer: 'https://www.google.com/',
+    }, 8000);
+    if (!res.ok) return null;
+    return extractFromHtmlContent(await res.text());
+  } catch {
+    return null;
+  }
+}
 
+async function tier2MobileSafari(targetUrl: string): Promise<ExtractionResult | null> {
+  try {
+    const res = await fetchWithTimeout(targetUrl, {
+      'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Mobile/15E148 Safari/604.1',
+      Accept: 'text/html,application/xhtml+xml,*/*;q=0.8',
+      'Accept-Language': 'he-IL,he;q=0.9,en;q=0.8',
+      Referer: 'https://www.google.co.il/',
+    }, 7500);
+    if (!res.ok) return null;
+    return extractFromHtmlContent(await res.text());
+  } catch {
+    return null;
+  }
+}
+
+async function tier3RenderedReader(targetUrl: string): Promise<ExtractionResult | null> {
+  try {
+    const res = await fetchWithTimeout('https://r.jina.ai/' + targetUrl, {
+      Accept: 'text/plain',
+      'X-Return-Format': 'markdown',
+    }, 11500);
     if (!res.ok) return null;
     const markdown = await res.text();
-    if (!markdown || markdown.length < 120) return null;
+    if (!markdown || markdown.length < 100) return null;
+
+    const sectionParsed = extractFromMarkdownSections(markdown);
+    if (sectionParsed.ingredients.length >= 2) {
+      return { ...sectionParsed, sourceMethod: 'reader-fallback' };
+    }
 
     const cleanedText = markdown
       .replace(/!\[[^\]]*\]\([^)]+\)/g, ' ')
       .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
       .replace(/^[#*>-]+\s*/gm, '');
-
-    const extracted = extractRecipeFromText(cleanedText);
-    if (extracted.ingredients.length >= 2) {
+    const fallbackParsed = extractRecipeFromText(cleanedText);
+    if (fallbackParsed.ingredients.length >= 2) {
       return {
-        ingredients: extracted.ingredients,
-        steps: extracted.steps,
+        ingredients: fallbackParsed.ingredients,
+        steps: fallbackParsed.steps,
         sourceMethod: 'reader-fallback',
       };
     }
@@ -219,22 +311,44 @@ async function fetchViaRenderedReader(targetUrl: string): Promise<{
   }
 }
 
-// שכבה 3: שליפת HTML דרך ממסר חיצוני במקרה של חסימת IP ישירה על השרת
-async function fetchViaRelayProxy(targetUrl: string): Promise<{
-  ingredients: string[];
-  steps: string[];
-  sourceMethod: 'json-ld' | 'html-fallback';
-} | null> {
+async function tier4MultiProxyRace(targetUrl: string): Promise<ExtractionResult | null> {
+  const encoded = encodeURIComponent(targetUrl);
+  const fetchProxy = async (proxyUrl: string, unwrapJson: boolean): Promise<ExtractionResult | null> => {
+    try {
+      const res = await fetchWithTimeout(proxyUrl, { Accept: 'text/html,application/json,*/*;q=0.8' }, 9500);
+      if (!res.ok) return null;
+      const html = unwrapJson ? ((await res.json()) as { contents?: string }).contents || '' : await res.text();
+      const parsed = extractFromHtmlContent(html);
+      return parsed ? { ...parsed, sourceMethod: parsed.sourceMethod === 'json-ld' ? 'json-ld' : 'relay-proxy' } : null;
+    } catch {
+      return null;
+    }
+  };
+
+  return firstNonNull([
+    fetchProxy('https://corsproxy.io/?' + encoded, false),
+    fetchProxy('https://api.codetabs.com/v1/proxy?quest=' + encoded, false),
+    fetchProxy('https://api.allorigins.win/get?url=' + encoded, true),
+  ]);
+}
+
+async function tier5WebArchiveFallback(targetUrl: string): Promise<ExtractionResult | null> {
   try {
-    const relayUrl = 'https://api.allorigins.win/raw?url=' + encodeURIComponent(targetUrl);
-    const res = await fetchWithTimeout(
-      relayUrl,
-      { Accept: 'text/html,application/xhtml+xml,*/*;q=0.8' },
-      11000
+    const metaRes = await fetchWithTimeout(
+      'https://archive.org/wayback/available?url=' + encodeURIComponent(targetUrl),
+      { Accept: 'application/json' },
+      5000
     );
-    if (!res.ok) return null;
-    const html = await res.text();
-    return extractFromHtmlContent(html);
+    if (!metaRes.ok) return null;
+    const meta = (await metaRes.json()) as { archived_snapshots?: { closest?: { available?: boolean; url?: string } } };
+    const snapUrl = meta?.archived_snapshots?.closest?.url;
+    if (!meta?.archived_snapshots?.closest?.available || !snapUrl) return null;
+
+    const rawSnapUrl = snapUrl.replace(/\/web\/(\d+)\//, '/web/$1id_/');
+    const pageRes = await fetchWithTimeout(rawSnapUrl, { Accept: 'text/html' }, 8500);
+    if (!pageRes.ok) return null;
+    const parsed = extractFromHtmlContent(await pageRes.text());
+    return parsed ? { ...parsed, sourceMethod: 'web-archive' } : null;
   } catch {
     return null;
   }
@@ -252,51 +366,25 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    let partialFallback: { ingredients: string[]; steps: string[] } | null = null;
+    const directWinner = await firstNonNull([
+      tier1DesktopGoogleReferer(targetUrl),
+      tier2MobileSafari(targetUrl),
+    ]);
+    if (directWinner) return NextResponse.json(directWinner);
 
-    // שכבה 1: שליפה ישירה עם כותרות דפדפן אמיתיות (Chrome 131)
-    try {
-      const response = await fetchWithTimeout(targetUrl, buildBrowserHeaders(targetUrl), 9500);
-      if (response.ok) {
-        const html = await response.text();
-        const directResult = extractFromHtmlContent(html);
-        if (directResult) {
-          return NextResponse.json(directResult);
-        }
-        // שמירת חילוץ חלקי למקרה שכל השכבות הבאות ייכשלו
-        const quickText = extractRecipeFromText(stripTagsToText(html));
-        if (quickText.ingredients.length > 0 || quickText.steps.length > 0) {
-          partialFallback = quickText;
-        }
-      }
-    } catch {
-      // מדלגים אוטומטית לשכבה 2 בלי לעצור
-    }
+    const bypassWinner = await firstNonNull([
+      tier3RenderedReader(targetUrl),
+      tier4MultiProxyRace(targetUrl),
+    ]);
+    if (bypassWinner) return NextResponse.json(bypassWinner);
 
-    // שכבה 2: דילוג דרך שכבת רינדור JS מלאה (לאתרים שמחזירים שלד חלקי או חוסמים גישה ישירה)
-    const readerResult = await fetchViaRenderedReader(targetUrl);
-    if (readerResult) {
-      return NextResponse.json(readerResult);
-    }
-
-    // שכבה 3: דילוג דרך ממסר חיצוני (לעקיפת חסימות IP של שרתי ענן)
-    const relayResult = await fetchViaRelayProxy(targetUrl);
-    if (relayResult) {
-      return NextResponse.json(relayResult);
-    }
-
-    if (partialFallback) {
-      return NextResponse.json({
-        ingredients: partialFallback.ingredients,
-        steps: partialFallback.steps,
-        sourceMethod: 'html-fallback',
-      });
-    }
+    const archiveWinner = await tier5WebArchiveFallback(targetUrl);
+    if (archiveWinner) return NextResponse.json(archiveWinner);
 
     return NextResponse.json(
       {
         error:
-          'האתר מפעיל חומת הגנה קשיחה (Cloudflare / חומת תשלום) שחוסמת גישה חיצונית. ניתן להעתיק את טקסט המתכון ולהדביק ישירות בתיבת המצרכים או להעלות צילום מסך.',
+          'האתר חוסם גישה אוטומטית ברמת השרת. העלה למעלה עד 3 צילומי מסך של המתכון או הדבק את הטקסט.',
       },
       { status: 422 }
     );
