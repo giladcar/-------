@@ -284,7 +284,6 @@ function renderPagesToJpegDataUrls(params: {
     const startY = 88;
     const bottomLimit = heightPx - 84;
 
-    // קו הפרדה אנכי בין החצי הימני לחצי השמאלי
     const dividerX = rightEdge - colWidth - colGap / 2;
     ctx.save();
     ctx.strokeStyle = '#e5e7eb';
@@ -317,9 +316,7 @@ function renderPagesToJpegDataUrls(params: {
       const secFont = 'bold 20px Arial, sans-serif';
       const bodyFont = '19px Arial, sans-serif';
 
-      const recipeItems: DrawLineItem[] = [];
-
-      const titleText =
+      const baseTitle =
         (rec.favorite ? '★ ' : '') +
         rec.title +
         (blk.isContinuation ? ' (המשך)' : '') +
@@ -327,18 +324,18 @@ function renderPagesToJpegDataUrls(params: {
         rec.targetServings +
         ' מנות';
 
-      for (const tLine of wrapHebrewLine(ctx, titleText, colWidth - 16, titleFont)) {
-        recipeItems.push({
-          text: tLine,
-          font: titleFont,
-          color: '#111827',
-          lineHeight: 30,
-        });
-      }
+      const contTitle =
+        (rec.favorite ? '★ ' : '') +
+        rec.title +
+        ' (המשך) — ' +
+        rec.targetServings +
+        ' מנות';
+
+      const bodyItems: DrawLineItem[] = [];
 
       const ings = blk.ingredients || [];
       if (ings.length > 0) {
-        recipeItems.push({
+        bodyItems.push({
           text: 'מצרכים:',
           font: secFont,
           color: '#b45309',
@@ -353,7 +350,7 @@ function renderPagesToJpegDataUrls(params: {
             measureSystem
           ).displayText;
           for (const iLine of wrapHebrewLine(ctx, '• ' + scaled, colWidth - 28, bodyFont)) {
-            recipeItems.push({
+            bodyItems.push({
               text: iLine,
               font: bodyFont,
               color: '#1f2937',
@@ -366,7 +363,7 @@ function renderPagesToJpegDataUrls(params: {
 
       const steps = blk.steps || [];
       if (steps.length > 0) {
-        recipeItems.push({
+        bodyItems.push({
           text: 'שלבי הכנה:',
           font: secFont,
           color: '#b45309',
@@ -374,7 +371,7 @@ function renderPagesToJpegDataUrls(params: {
         });
         steps.forEach((st, idx) => {
           for (const sLine of wrapHebrewLine(ctx, idx + 1 + '. ' + st, colWidth - 28, bodyFont)) {
-            recipeItems.push({
+            bodyItems.push({
               text: sLine,
               font: bodyFont,
               color: '#1f2937',
@@ -385,10 +382,39 @@ function renderPagesToJpegDataUrls(params: {
         });
       }
 
-      // מציירים את המתכון בחצי הנוכחי
-      const half = halves[activeHalfIndex];
-      for (const item of recipeItems) {
-        if (half.y + item.lineHeight > bottomLimit) break;
+      const drawTitleIntoHalf = (half: HalfColumnState, heading: string) => {
+        for (const tLine of wrapHebrewLine(ctx, heading, colWidth - 16, titleFont)) {
+          if (half.y + 30 > bottomLimit) return false;
+          drawAlignedLine(ctx, tLine, half.x, half.y, titleFont, '#111827', 'right');
+          half.y += 30;
+        }
+        return true;
+      };
+
+      let itemIdx = 0;
+      let startedInCurrentHalf = false;
+
+      while (activeHalfIndex < halves.length && itemIdx < bodyItems.length) {
+        const half = halves[activeHalfIndex];
+
+        if (!startedInCurrentHalf) {
+          const heading = activeHalfIndex === 0 ? baseTitle : contTitle;
+          const ok = drawTitleIntoHalf(half, heading);
+          startedInCurrentHalf = true;
+          if (!ok) {
+            activeHalfIndex += 1;
+            startedInCurrentHalf = false;
+            continue;
+          }
+        }
+
+        const item = bodyItems[itemIdx];
+        if (half.y + item.lineHeight > bottomLimit) {
+          activeHalfIndex += 1;
+          startedInCurrentHalf = false;
+          continue;
+        }
+
         if (item.text) {
           drawAlignedLine(
             ctx,
@@ -401,9 +427,10 @@ function renderPagesToJpegDataUrls(params: {
           );
         }
         half.y += item.lineHeight;
+        itemIdx += 1;
       }
 
-      // הכלל: מתכון אחר לא ממשיך באותו חצי — עוברים לחצי הבא עבור המתכון הבא
+      // מתכון אחר לא מתחיל באותו חצי — מתקדמים לחצי הבא עבור המתכון הבא
       activeHalfIndex += 1;
     }
 
