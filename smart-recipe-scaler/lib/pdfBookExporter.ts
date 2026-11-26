@@ -281,96 +281,10 @@ function renderPagesToJpegDataUrls(params: {
     const rightColX = rightEdge - 8;
     const leftColX = rightEdge - colWidth - colGap - 8;
 
-    const allItems: DrawLineItem[] = [];
-
-    for (const blk of sheet.blocks) {
-      if (blk.kind === 'recipe-part' && blk.recipe) {
-        const rec = blk.recipe;
-        const factor = rec.originalServings > 0 ? rec.targetServings / rec.originalServings : 1;
-
-        const titleFont = 'bold 23px Arial, sans-serif';
-        const secFont = 'bold 20px Arial, sans-serif';
-        const bodyFont = '19px Arial, sans-serif';
-
-        const titleText =
-          (rec.favorite ? '★ ' : '') +
-          rec.title +
-          (blk.isContinuation ? ' (המשך)' : '') +
-          ' — ' +
-          rec.targetServings +
-          ' מנות';
-
-        for (const tLine of wrapHebrewLine(ctx, titleText, colWidth - 16, titleFont)) {
-          allItems.push({
-            text: tLine,
-            font: titleFont,
-            color: '#111827',
-            lineHeight: 30,
-          });
-        }
-
-        const ings = blk.ingredients || [];
-        if (ings.length > 0) {
-          allItems.push({
-            text: 'מצרכים:',
-            font: secFont,
-            color: '#b45309',
-            lineHeight: 27,
-          });
-          for (const ing of ings) {
-            const scaled = parseAndScaleLine(
-              ing,
-              factor,
-              rec.dietMode,
-              rec.convertToGrams,
-              measureSystem
-            ).displayText;
-            for (const iLine of wrapHebrewLine(ctx, '• ' + scaled, colWidth - 28, bodyFont)) {
-              allItems.push({
-                text: iLine,
-                font: bodyFont,
-                color: '#1f2937',
-                lineHeight: 25,
-                indentPx: 12,
-              });
-            }
-          }
-        }
-
-        const steps = blk.steps || [];
-        if (steps.length > 0) {
-          allItems.push({
-            text: 'שלבי הכנה:',
-            font: secFont,
-            color: '#b45309',
-            lineHeight: 27,
-          });
-          steps.forEach((st, idx) => {
-            for (const sLine of wrapHebrewLine(ctx, idx + 1 + '. ' + st, colWidth - 28, bodyFont)) {
-              allItems.push({
-                text: sLine,
-                font: bodyFont,
-                color: '#1f2937',
-                lineHeight: 25,
-                indentPx: 12,
-              });
-            }
-          });
-        }
-
-        allItems.push({
-          text: '',
-          font: bodyFont,
-          color: '#1f2937',
-          lineHeight: 14,
-        });
-      }
-    }
-
     const startY = 88;
     const bottomLimit = heightPx - 84;
 
-    // קו הפרדה אנכי עדין בין שני הטורים
+    // קו הפרדה אנכי בין החצי הימני לחצי השמאלי
     const dividerX = rightEdge - colWidth - colGap / 2;
     ctx.save();
     ctx.strokeStyle = '#e5e7eb';
@@ -381,35 +295,116 @@ function renderPagesToJpegDataUrls(params: {
     ctx.stroke();
     ctx.restore();
 
-    // מילוי הטור הימני עד התחתית ואז המשך לטור השמאלי עד התחתית
-    let currentX = rightColX;
-    let y = startY;
-    let movedToLeftCol = false;
+    interface HalfColumnState {
+      x: number;
+      y: number;
+    }
 
-    for (let i = 0; i < allItems.length; i++) {
-      const item = allItems[i];
-      if (y + item.lineHeight > bottomLimit) {
-        if (!movedToLeftCol) {
-          currentX = leftColX;
-          y = startY;
-          movedToLeftCol = true;
-        } else {
-          break;
+    const halves: HalfColumnState[] = [
+      { x: rightColX, y: startY },
+      { x: leftColX, y: startY },
+    ];
+    let activeHalfIndex = 0;
+
+    for (const blk of sheet.blocks) {
+      if (blk.kind !== 'recipe-part' || !blk.recipe) continue;
+      if (activeHalfIndex >= halves.length) break;
+
+      const rec = blk.recipe;
+      const factor = rec.originalServings > 0 ? rec.targetServings / rec.originalServings : 1;
+
+      const titleFont = 'bold 23px Arial, sans-serif';
+      const secFont = 'bold 20px Arial, sans-serif';
+      const bodyFont = '19px Arial, sans-serif';
+
+      const recipeItems: DrawLineItem[] = [];
+
+      const titleText =
+        (rec.favorite ? '★ ' : '') +
+        rec.title +
+        (blk.isContinuation ? ' (המשך)' : '') +
+        ' — ' +
+        rec.targetServings +
+        ' מנות';
+
+      for (const tLine of wrapHebrewLine(ctx, titleText, colWidth - 16, titleFont)) {
+        recipeItems.push({
+          text: tLine,
+          font: titleFont,
+          color: '#111827',
+          lineHeight: 30,
+        });
+      }
+
+      const ings = blk.ingredients || [];
+      if (ings.length > 0) {
+        recipeItems.push({
+          text: 'מצרכים:',
+          font: secFont,
+          color: '#b45309',
+          lineHeight: 27,
+        });
+        for (const ing of ings) {
+          const scaled = parseAndScaleLine(
+            ing,
+            factor,
+            rec.dietMode,
+            rec.convertToGrams,
+            measureSystem
+          ).displayText;
+          for (const iLine of wrapHebrewLine(ctx, '• ' + scaled, colWidth - 28, bodyFont)) {
+            recipeItems.push({
+              text: iLine,
+              font: bodyFont,
+              color: '#1f2937',
+              lineHeight: 25,
+              indentPx: 12,
+            });
+          }
         }
       }
 
-      if (item.text) {
-        drawAlignedLine(
-          ctx,
-          item.text,
-          currentX - (item.indentPx || 0),
-          y,
-          item.font,
-          item.color,
-          'right'
-        );
+      const steps = blk.steps || [];
+      if (steps.length > 0) {
+        recipeItems.push({
+          text: 'שלבי הכנה:',
+          font: secFont,
+          color: '#b45309',
+          lineHeight: 27,
+        });
+        steps.forEach((st, idx) => {
+          for (const sLine of wrapHebrewLine(ctx, idx + 1 + '. ' + st, colWidth - 28, bodyFont)) {
+            recipeItems.push({
+              text: sLine,
+              font: bodyFont,
+              color: '#1f2937',
+              lineHeight: 25,
+              indentPx: 12,
+            });
+          }
+        });
       }
-      y += item.lineHeight;
+
+      // מציירים את המתכון בחצי הנוכחי
+      const half = halves[activeHalfIndex];
+      for (const item of recipeItems) {
+        if (half.y + item.lineHeight > bottomLimit) break;
+        if (item.text) {
+          drawAlignedLine(
+            ctx,
+            item.text,
+            half.x - (item.indentPx || 0),
+            half.y,
+            item.font,
+            item.color,
+            'right'
+          );
+        }
+        half.y += item.lineHeight;
+      }
+
+      // הכלל: מתכון אחר לא ממשיך באותו חצי — עוברים לחצי הבא עבור המתכון הבא
+      activeHalfIndex += 1;
     }
 
     pageCanvases.push(canvas);
