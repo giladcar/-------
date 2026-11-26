@@ -18,6 +18,8 @@ import {
   persistSavedRecipes,
 } from '@/lib/recipeBook';
 import RecipeBookVault from '@/components/RecipeBookVault';
+import { ConversionUnit, convertIngredientLine } from '@/lib/unitConverter';
+import { GlobalUnitBar, IngredientUnitSelect } from '@/components/UnitConversionControls';
 
 const SAMPLE_RECIPE = [
   '2 כוסות קמח לבן',
@@ -149,6 +151,8 @@ export default function SmartRecipeScalerPage() {
   const [dietMode, setDietMode] = useState<DietMode>('none');
   const [convertToGrams, setConvertToGrams] = useState<boolean>(false);
   const [measureSystem, setMeasureSystem] = useState<MeasureSystem>('metric');
+  const [globalUnit, setGlobalUnit] = useState<ConversionUnit>('original');
+  const [ingredientUnitOverrides, setIngredientUnitOverrides] = useState<Record<number, ConversionUnit>>({});
   const [tempUnit, setTempUnit] = useState<TempUnit>('C');
   const [showAirFryerHints, setShowAirFryerHints] = useState<boolean>(true);
   const [darkMode, setDarkMode] = useState<boolean>(false);
@@ -220,6 +224,8 @@ export default function SmartRecipeScalerPage() {
     setDietMode(item.dietMode);
     setConvertToGrams(item.convertToGrams);
     setCheckedItems({});
+    setGlobalUnit('original');
+    setIngredientUnitOverrides({});
     setActiveTab('scaler');
   };
 
@@ -462,6 +468,20 @@ export default function SmartRecipeScalerPage() {
       );
   }, [rawIngredients, scaleFactor, dietMode, convertToGrams, measureSystem]);
 
+  const convertedIngredients = useMemo(() => {
+    return parsedIngredients.map((item, idx) => {
+      const activeUnit: ConversionUnit = ingredientUnitOverrides[idx] ?? globalUnit;
+      const conv = convertIngredientLine(item.displayText, activeUnit);
+      return {
+        ...item,
+        activeUnit,
+        convertedText: conv.convertedText,
+        isConverted: conv.isConverted,
+        conversionNote: conv.note,
+      };
+    });
+  }, [parsedIngredients, globalUnit, ingredientUnitOverrides]);
+
   const stepsWithTimers = useMemo(() => {
     return rawSteps
       .split('\n')
@@ -487,6 +507,8 @@ export default function SmartRecipeScalerPage() {
       setRawSteps(steps.join('\n'));
     }
     setCheckedItems({});
+    setGlobalUnit('original');
+    setIngredientUnitOverrides({});
     setImportStatus(
       label + ' — חולצו ' + ingredients.length + ' מצרכים ו-' + steps.length + ' שלבי הכנה.'
     );
@@ -650,7 +672,7 @@ export default function SmartRecipeScalerPage() {
   };
 
   const buildShareMessage = () => {
-    const ingLines = parsedIngredients.map((item) => '• ' + item.displayText).join('\n');
+    const ingLines = convertedIngredients.map((item) => '• ' + item.convertedText).join('\n');
     const stepLines = stepsWithTimers.map((s) => s.stepNumber + '. ' + s.displayText).join('\n');
     return (
       '🍽️ *מתכון מותאם (' +
@@ -663,7 +685,7 @@ export default function SmartRecipeScalerPage() {
   };
 
   const handleCopyRecipe = () => {
-    const text = parsedIngredients.map((item) => '• ' + item.displayText).join('\n');
+    const text = convertedIngredients.map((item) => '• ' + item.convertedText).join('\n');
     navigator.clipboard.writeText(text);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
@@ -1320,6 +1342,8 @@ export default function SmartRecipeScalerPage() {
                           setRawIngredients('');
                           setRawSteps('');
                           setCheckedItems({});
+                          setGlobalUnit('original');
+                          setIngredientUnitOverrides({});
                         }}
                         className={mutedTextClass + ' text-xs hover:text-red-500 cursor-pointer'}
                       >
@@ -1377,10 +1401,25 @@ export default function SmartRecipeScalerPage() {
                     </div>
                   </div>
 
+                  <GlobalUnitBar
+                    globalUnit={globalUnit}
+                    onChangeGlobalUnit={(unit) => {
+                      setGlobalUnit(unit);
+                      setIngredientUnitOverrides({});
+                    }}
+                    hasOverrides={Object.keys(ingredientUnitOverrides).length > 0}
+                    onResetAll={() => {
+                      setGlobalUnit('original');
+                      setIngredientUnitOverrides({});
+                    }}
+                    darkMode={darkMode}
+                  />
+
                   <ul className="space-y-2.5">
-                    {parsedIngredients.map((item, idx) => {
+                    {convertedIngredients.map((item, idx) => {
                       const key = 'ing-' + idx;
                       const isChecked = !!checkedItems[key];
+                      const isOverridden = ingredientUnitOverrides[idx] !== undefined;
                       return (
                         <li
                           key={key}
@@ -1396,7 +1435,30 @@ export default function SmartRecipeScalerPage() {
                               : 'bg-amber-50/30 border-amber-200/70 hover:bg-amber-50')
                           }
                         >
-                          <div className="font-medium text-base">{item.displayText}</div>
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="font-medium text-base">{item.convertedText}</div>
+                            <IngredientUnitSelect
+                              value={item.activeUnit}
+                              isOverridden={isOverridden}
+                              onChange={(newUnit) => {
+                                setIngredientUnitOverrides((prev) => {
+                                  const next = { ...prev };
+                                  if (newUnit === globalUnit) {
+                                    delete next[idx];
+                                  } else {
+                                    next[idx] = newUnit;
+                                  }
+                                  return next;
+                                });
+                              }}
+                              darkMode={darkMode}
+                            />
+                          </div>
+                          {item.isConverted && item.conversionNote && (
+                            <div className={mutedTextClass + ' text-xs mt-1'}>
+                              {item.conversionNote}
+                            </div>
+                          )}
                           {item.substitutionNote && (
                             <div className="text-xs text-emerald-500 mt-1 font-medium">
                               החלפה חכמה: {item.substitutionNote}
